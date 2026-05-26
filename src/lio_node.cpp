@@ -338,6 +338,18 @@ private:
     backend_config_.registration_max_iterations =
       declare_parameter<int>(
         "registration_max_iterations", backend_config_.registration_max_iterations);
+    backend_config_.registration_convergence_translation_m =
+      declare_parameter<double>(
+        "registration_convergence_translation_m",
+        backend_config_.registration_convergence_translation_m);
+    backend_config_.registration_convergence_rotation_rad =
+      declare_parameter<double>(
+        "registration_convergence_rotation_rad",
+        backend_config_.registration_convergence_rotation_rad);
+    backend_config_.registration_huber_threshold =
+      declare_parameter<double>(
+        "registration_huber_threshold",
+        backend_config_.registration_huber_threshold);
     backend_config_.enable_degenerate_regularization =
       declare_parameter<bool>(
         "enable_degenerate_regularization",
