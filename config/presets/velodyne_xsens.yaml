@@ -39,8 +39,11 @@ pylot_lio:
     registration: "small_gicp_gicp"
     registration_max_iterations: 20
     registration_max_correspondence_m: 2.0
-    # OpenMP 並列度。 物理コア数を上限とすること。 0 で omp_get_max_threads()。
-    registration_num_threads: 0
+    # OpenMP 並列度。 物理コア数を上限とすること。
+    # 注意: 0 を「auto」として解釈するのは plain_gicp のみ (PlainGicpRegistration が
+    # omp_get_max_threads() に委ねる)。 small_gicp_* ラッパは値をそのまま
+    # small_gicp::RegistrationPCL::setNumThreads() に渡すため、 ここでは正の整数を指定する。
+    registration_num_threads: 4
     # Gauss-Newton 停止条件 (並進 / 回転)。 厳しくすると反復回数増、 緩めると早く打ち切る。
     # plain_gicp 固有 (small_gicp バリアントでは無視される)。
     registration_convergence_translation_m: 0.0001
