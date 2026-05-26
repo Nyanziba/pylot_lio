@@ -123,9 +123,15 @@ TEST(PlainGicpOpenMP, SingleAndMultiThreadProduceEquivalentResults)
   const auto result_multi = registration_multi.align(
     source_cloud, voxel_map, Eigen::Isometry3d::Identity());
 
-  // 反復回数・対応点数は完全一致するべき (浮動小数の合算順序にほぼ依存しない範囲)。
-  EXPECT_EQ(result_single.iterations, result_multi.iterations);
-  EXPECT_EQ(result_single.num_correspondences, result_multi.num_correspondences);
+  // 両方とも収束していること (前提条件)。 iterations / num_correspondences の厳密一致は
+  // 並列合算順序の違いで Gauss-Newton 反復が閾値境界で前後し得るため要求しない。
+  // 代わりに数値的に近い変換結果になることを確認する。
+  ASSERT_TRUE(result_single.converged);
+  ASSERT_TRUE(result_multi.converged);
+  EXPECT_NEAR(
+    static_cast<double>(result_single.num_correspondences),
+    static_cast<double>(result_multi.num_correspondences),
+    /*max_diff=*/2.0);  // 閾値付近で 1-2 点のゆらぎは許容
 
   // 変換と cost は合算順序差で僅かに違いうる。 並進 1e-6 m、 回転 1e-6 rad 以下を許容。
   const Eigen::Vector3d translation_diff =

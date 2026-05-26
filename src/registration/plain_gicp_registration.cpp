@@ -51,9 +51,10 @@ PlainGicpRegistration::AlignResult PlainGicpRegistration::align(
   for (int iteration_index = 0; iteration_index < config_.max_iterations; ++iteration_index) {
     // 法線方程式 H * delta = b を組み立てる。delta は SE(3) 接ベクトル [omega; rho]。
     // 並列領域内で thread-id ごとにローカルに accumulate し、 後で合算する。
-    // Matrix6d (288B) ・ Vector6d (48B) は単独でキャッシュライン (64B) を跨ぐサイズなので
-    // false sharing は事実上発生しない。 std::vector が要素間に padding を入れないこと
-    // は気にしなくて良い。
+    // 注意: Matrix6d は 288 B (= 64 B キャッシュライン × 4.5) で連続要素はライン境界を
+    // 跨ぐ可能性があり、 厳密には false sharing が起こり得る。 ただし更新頻度は
+    // num_source_points 回 / num_threads と比較的疎で、 ベンチでは有意な減速は出ていない。
+    // 必要なら alignas(64) のラッパ struct を std::vector に入れて 64 B padding すると良い。
     std::vector<Eigen::Matrix<double, 6, 6>> per_thread_hessian(
       actual_num_threads, Eigen::Matrix<double, 6, 6>::Zero());
     std::vector<Eigen::Matrix<double, 6, 1>> per_thread_gradient(
@@ -123,7 +124,16 @@ PlainGicpRegistration::AlignResult PlainGicpRegistration::align(
           robust_weight = config_.huber_threshold / std::sqrt(mahalanobis_squared);
         }
 
-        // SE(3) 左摂動のヤコビアン (シリアル版と同じ式)。
+        // SE(3) 左摂動 T_new = delta_T * T_old の微分:
+        //   T_new(p) = delta_R * (R*p + t) + delta_t
+        //            = source_in_world + omega^ * source_in_world + delta_t
+        //   d(T_new(p))/d(omega)   = -skew(source_in_world)
+        //   d(T_new(p))/d(delta_t) =  I
+        // 残差 r = target - T(p) なので
+        //   dr/d(omega)   =  skew(source_in_world)
+        //   dr/d(delta_t) = -I
+        // 重要: skew(R*p) ではなく skew(source_in_world = R*p + t) を使うこと。
+        // 並進 t が大きくなると両者は一致せず、誤ったヤコビアンは姿勢発散の原因になる。
         Eigen::Matrix<double, 3, 6> jacobian_matrix;
         jacobian_matrix.block<3, 3>(0, 0) = lie::skew(source_in_world);
         jacobian_matrix.block<3, 3>(0, 3) = -Eigen::Matrix3d::Identity();

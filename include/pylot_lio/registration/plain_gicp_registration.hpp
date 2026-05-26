@@ -26,9 +26,10 @@ public:
 
     // OpenMP 並列化用スレッド数。
     //   <= 0: omp_get_max_threads() に任せる (OpenMP が無効の場合は逐次)
-    //   1   : 逐次実行 (OpenMP 経路を踏まない)
-    //   >=2 : 明示的スレッド数を omp_set_num_threads / num_threads(...) で指定
+    //   1   : 逐次実行 (OpenMP 経路を踏まない、 デバッグ用途)
+    //   >=2 : 明示的スレッド数を num_threads(...) clause で指定
     // 小規模点群 (~1000 以下) では並列化オーバヘッドが目立つので 1 〜 2 が無難。
+    // BackendConfig::registration_num_threads (small_gicp と共通) から流し込まれる。
     int num_threads = 1;
 
     // ============================================================
