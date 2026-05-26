@@ -306,10 +306,11 @@ TEST(GicpOnlyEstimator, SanityCheckRejectsHugeCorrection)
   EXPECT_FALSE(estimator.getDiagnostics().converged);
 }
 
-TEST(GicpOnlyEstimator, StationaryDetectionSkipsAlignAfterStreak)
+TEST(GicpOnlyEstimator, StationaryDetectionSuppressesPoseUpdateAfterStreak)
 {
-  // stationary_streak_required 回連続で「直前 1 スキャン分の delta が閾値以下」なら
-  // align を呼ばずに pose 据え置きにする。
+  // align は毎回走らせる (新設計)。 align 結果 が現状 pose とほぼ同じ場合に
+  // streak が積まれ、 streak >= required で pose 更新を抑制し velocity をゼロにする。
+  // 旧設計と違い「align スキップ」はしない (ラッチアップを避けるため)。
   GicpOnlyEstimator::Config config;
   config.stationary_translation_threshold_m = 0.01;
   config.stationary_rotation_threshold_rad = 0.01;
@@ -323,19 +324,60 @@ TEST(GicpOnlyEstimator, StationaryDetectionSkipsAlignAfterStreak)
   StubRegistration registration;
   PointCloud empty_cloud;
 
-  // 静止状態 (registration が常に (0,0,0) を返す) でスキャンを連続投入。
+  // 静止状態: registration が常に (0, 0, 0) を返す = measured_step が常にゼロ。
   registration.return_pose_ = Eigen::Isometry3d::Identity();
 
-  // 1 スキャン目: has_previous_pose_=false なので静止判定にも入らず align 実行。
+  // 3 連続スキャンで align が 3 回呼ばれる (スキップしない、 これが新設計の特徴)。
   estimator.updateWithScan(empty_cloud, map, registration, kOneHundredMillisecondsInNanoseconds);
-  // 2 スキャン目: streak=1 (要求 2 に未達)、 align 実行。
   estimator.updateWithScan(empty_cloud, map, registration, kOneHundredMillisecondsInNanoseconds * 2);
-  // 3 スキャン目: streak=2 (要求 2 達成)、 align スキップ。
-  const int call_count_before = registration.call_count_;
   estimator.updateWithScan(empty_cloud, map, registration, kOneHundredMillisecondsInNanoseconds * 3);
 
-  EXPECT_EQ(registration.call_count_, call_count_before);  // align 呼ばれていない
+  EXPECT_EQ(registration.call_count_, 3);  // align は毎回走っている (= ラッチしない前提)
   EXPECT_NEAR(estimator.getState().velocity_world.norm(), 0.0, 1e-9);
+  EXPECT_NEAR(estimator.getState().pose_world_body.translation().norm(), 0.0, 1e-9);
+}
+
+TEST(GicpOnlyEstimator, StationaryStateExitsWhenMotionResumes)
+{
+  // ★ regression test for stationary latch-up bug ★
+  // 一度 stationary 状態に入っても、 ロボットが動き始めれば自動復帰する。
+  // 旧設計では align をスキップしていたため measured_step を取得できず、
+  // 「ずっと静止」と判定されてラッチし、 移動を検出できない致命バグがあった。
+  GicpOnlyEstimator::Config config;
+  config.stationary_translation_threshold_m = 0.01;
+  config.stationary_rotation_threshold_rad = 0.01;
+  config.stationary_streak_required = 2;
+  GicpOnlyEstimator estimator(config);
+  estimator.initialize(RobotState{});
+
+  VoxelMap map(VoxelMap::Config{});
+  primeMapWithOnePoint(map);
+
+  StubRegistration registration;
+  PointCloud empty_cloud;
+
+  // フェーズ 1: 静止状態を 3 連続スキャンで作る → stationary mode 突入。
+  registration.return_pose_ = Eigen::Isometry3d::Identity();
+  for (int scan_index = 1; scan_index <= 3; ++scan_index) {
+    estimator.updateWithScan(
+      empty_cloud, map, registration,
+      kOneHundredMillisecondsInNanoseconds * scan_index);
+  }
+  EXPECT_NEAR(estimator.getState().pose_world_body.translation().norm(), 0.0, 1e-9);
+
+  // フェーズ 2: ロボットが急に 0.5 m 動いた状況。 registration は新位置を返す。
+  Eigen::Isometry3d moved_pose = Eigen::Isometry3d::Identity();
+  moved_pose.translation() = Eigen::Vector3d(0.5, 0.0, 0.0);
+  registration.return_pose_ = moved_pose;
+  estimator.updateWithScan(
+    empty_cloud, map, registration, kOneHundredMillisecondsInNanoseconds * 4);
+
+  // 旧バグ: align がスキップされていたので pose は (0,0,0) のまま (静止ラッチ)。
+  // 新設計: align は走るので measured_step=0.5 > 閾値、 streak リセット、 pose 更新復活。
+  EXPECT_NEAR(estimator.getState().pose_world_body.translation().x(), 0.5, 1e-6)
+    << "stationary mode failed to exit when sensor detected motion (latch-up regression)";
+  // 続く 1 スキャンで velocity も復活する (現状 (0.5) → 次 align (0.5) なら dt=0.1 で
+  // 0 だが、 さらに動かして velocity を確認するのは別テストの責務とする)。
 }
 
 TEST(GicpOnlyEstimator, EmaSmoothsPoseTowardAlignResult)

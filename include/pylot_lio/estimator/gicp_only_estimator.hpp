@@ -55,11 +55,14 @@ public:
     double max_jerk_translation_m = 0.0;
     double max_jerk_rotation_rad = 0.0;
 
-    // --- C. 静止検出 (align 抑制) ---
-    // 前回 align 結果と現状 pose の SE(3) delta (= 直前 1 スキャン分の運動) が
-    // 並進・回転とも以下の閾値以下のスキャンが stationary_streak_required 回
-    // 連続したら、 align をスキップして pose 据え置きにする。
-    // ドリフトをマップに焼き込む事故を防ぐ。 0 以下で無効化。
+    // --- C. 静止検出 (post-align: pose 更新抑制) ---
+    // 毎スキャン align を走らせ、 その結果 「current_pose⁻¹ * align結果」 の SE(3) delta
+    // (= センサが観測した 1 スキャン分の運動) が並進・回転とも閾値以下になるスキャンが
+    // stationary_streak_required 回連続したら、 pose を据え置き velocity をゼロにする。
+    // ドリフトをマップに焼き込む事故を防ぐ。
+    // align は毎回走らせるので、 実際にロボットが動き始めれば measured delta が
+    // 閾値を超えて streak がリセットされ、 自動的に通常モードに復帰する (ラッチしない)。
+    // 0 以下で無効化。
     double stationary_translation_threshold_m = 0.0;
     double stationary_rotation_threshold_rad = 0.0;
     int stationary_streak_required = 3;

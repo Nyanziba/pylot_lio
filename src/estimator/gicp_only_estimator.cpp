@@ -174,47 +174,6 @@ void GicpOnlyEstimator::updateWithScan(
     }
   }
 
-  // ---- C. 静止検出: 直前 1 スキャン分の運動が閾値以下のスキャンが連続したら
-  //                     align をスキップして pose 据え置きにする。 ----
-  if (has_previous_pose_ &&
-      config_.stationary_translation_threshold_m > 0.0 &&
-      config_.stationary_rotation_threshold_rad > 0.0)
-  {
-    const Eigen::Isometry3d previous_step_delta =
-      previous_pose_world_body_.inverse() * current_state_.pose_world_body;
-    const auto previous_step_norm = computeDeltaNorm(previous_step_delta);
-    if (previous_step_norm.translation_m <= config_.stationary_translation_threshold_m &&
-        previous_step_norm.rotation_rad <= config_.stationary_rotation_threshold_rad)
-    {
-      ++stationary_streak_count_;
-    } else {
-      stationary_streak_count_ = 0;
-    }
-  } else {
-    stationary_streak_count_ = 0;
-  }
-
-  const bool is_stationary =
-    config_.stationary_streak_required > 0 &&
-    stationary_streak_count_ >= config_.stationary_streak_required;
-
-  if (is_stationary) {
-    // pose / previous_pose を据え置き、 velocity をゼロに。 next-extrapolation は
-    // 「前回→今回」がゼロ delta なので静止仮定で次スキャンに突入する。
-    current_state_.velocity_world.setZero();
-    previous_pose_world_body_ = current_state_.pose_world_body;
-    has_previous_pose_ = true;
-    previous_dt_s_ = current_dt_s;
-    previous_scan_timestamp_ns_ = scan_timestamp_ns;
-    last_diagnostics_.iterations = 0;
-    last_diagnostics_.cost = 0.0;
-    last_diagnostics_.converged = true;
-    const auto end_time = std::chrono::steady_clock::now();
-    last_diagnostics_.processing_time_ms =
-      std::chrono::duration<double, std::milli>(end_time - start_time).count();
-    return;
-  }
-
   // ---- 等速度モデルによる initial_guess (主候補) ----
   Eigen::Isometry3d velocity_initial_guess = current_state_.pose_world_body;
   if (has_previous_pose_) {
@@ -366,6 +325,59 @@ void GicpOnlyEstimator::updateWithScan(
       accepted_pose = velocity_initial_guess;
       best_result.converged = false;
     }
+  }
+
+  // ---- C. 静止検出 (post-align): 「今回 align が測定した motion」が小さいなら静止扱い ----
+  //   measured_step = current_pose⁻¹ * accepted_pose
+  //     = 「前回 align 結果」から「今回 align 結果」への剛体変換
+  //     = この 1 スキャン区間で registration が実際に観測した運動
+  //
+  //   旧設計は align 前に previous_pose↔current_pose を見ていたため、 一度 stationary
+  //   と判定すると align をスキップ → current_pose 不変 → 次回も delta=0 → 永久ラッチ
+  //   という致命的バグがあった。
+  //   この実装では align は毎回走らせ、 「センサが見ている外界の動き」を直接見るので
+  //   実際にロボットが動いた瞬間に measured_step が閾値を超えて streak がリセットされる。
+  if (config_.stationary_translation_threshold_m > 0.0 &&
+      config_.stationary_rotation_threshold_rad > 0.0 &&
+      best_result.converged)
+  {
+    const Eigen::Isometry3d measured_step =
+      current_state_.pose_world_body.inverse() * accepted_pose;
+    const auto measured_step_norm = computeDeltaNorm(measured_step);
+    if (measured_step_norm.translation_m <= config_.stationary_translation_threshold_m &&
+        measured_step_norm.rotation_rad <= config_.stationary_rotation_threshold_rad)
+    {
+      ++stationary_streak_count_;
+    } else {
+      stationary_streak_count_ = 0;
+    }
+  } else {
+    // 閾値未設定 / 未収束時は静止カウンタを使わない。
+    stationary_streak_count_ = 0;
+  }
+
+  const bool is_stationary =
+    config_.stationary_streak_required > 0 &&
+    stationary_streak_count_ >= config_.stationary_streak_required;
+
+  if (is_stationary) {
+    // pose 更新を抑制 (current_state は前回値を維持)、 velocity をゼロに。
+    // align は走り、 diagnostics は valid な値を載せる (converged=true は維持)。
+    // previous_pose は current_state に揃え、 履歴チェーンの「次の static 候補」を提供する。
+    // has_older_pose_ をリセットして等加速度モデル E の履歴は中断 (静止区間に jerk は無意味)。
+    current_state_.velocity_world.setZero();
+    previous_pose_world_body_ = current_state_.pose_world_body;
+    has_previous_pose_ = true;
+    has_older_pose_ = false;
+    previous_dt_s_ = current_dt_s;
+    previous_scan_timestamp_ns_ = scan_timestamp_ns;
+    const auto end_time = std::chrono::steady_clock::now();
+    last_diagnostics_.iterations = best_result.iterations;
+    last_diagnostics_.cost = best_result.final_cost;
+    last_diagnostics_.converged = true;
+    last_diagnostics_.processing_time_ms =
+      std::chrono::duration<double, std::milli>(end_time - start_time).count();
+    return;
   }
 
   // ---- D. EMA 平滑化 ----

@@ -60,9 +60,10 @@ pylot_lio:
     gicp_only_max_jerk_translation_m: 0.3
     gicp_only_max_jerk_rotation_rad: 0.2
 
-    # ---- C. 静止検出 + align 抑制 ----
-    # 「直前 1 スキャン分の delta」 が両方とも閾値以下のスキャンが streak_required 回連続で
-    # align をスキップして pose 据え置き。 ドリフトを map に焼き込む事故を防ぐ。
+    # ---- C. 静止検出 (post-align pose 更新抑制) ----
+    # align は毎回走らせ、 measured_step (current_pose⁻¹ * align結果) が両方とも閾値以下の
+    # スキャンが streak_required 回連続したら pose 更新を抑制 + velocity ゼロ。
+    # 動き始めれば measured_step が閾値を超えて streak リセット → 自動復帰 (ラッチしない)。
     gicp_only_stationary_translation_threshold_m: 0.01
     gicp_only_stationary_rotation_threshold_rad: 0.01
     gicp_only_stationary_streak_required: 3
