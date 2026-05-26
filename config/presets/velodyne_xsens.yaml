@@ -36,13 +36,60 @@ pylot_lio:
     submap_cell_sampling_mode: "random_one"
     submap_random_seed: 12345
 
-    # マッチング。 Velodyne の遠点を活かすため max_correspondence を 3m に伸ばす。
-    registration: "small_gicp_vgicp"
-    registration_max_correspondence_m: 3.0
-    registration_max_iterations: 30
+    registration: "small_gicp_gicp"
+    registration_max_iterations: 20
+    registration_max_correspondence_m: 2.0
+    # OpenMP 並列度。 物理コア数を上限とすること。 0 で omp_get_max_threads()。
+    registration_num_threads: 0
+    # Gauss-Newton 停止条件 (並進 / 回転)。 厳しくすると反復回数増、 緩めると早く打ち切る。
+    # plain_gicp 固有 (small_gicp バリアントでは無視される)。
+    registration_convergence_translation_m: 0.0001
+    registration_convergence_rotation_rad: 0.0001
+    # Huber ロバスト重み。 残差の Mahalanobis ノルムが huber_threshold を超えると
+    # 重みが線形に下がる。 動的物体・葉・反射点が多い屋外なら小さく (例: 0.5) する。
+    registration_huber_threshold: 1.0
 
-    # 状態推定。 Mid-360 と同じ ieskf。
+
+    # 状態推定。 IMU 校正が未済 (extrinsic identity) の段階では IESKF より
+    # gicp_only の方が安定。 校正後に "ieskf" に切り替えるのが推奨フロー。
     state_estimator: "gicp_only"
+    # ---- 等速度モデルの暴走防止 (デフォルト維持) ----
+    # 等速度外挿で 1 スキャン分の相対変換が大きすぎる場合のクランプ。
+    gicp_only_max_extrapolation_translation_m: 1.0
+    gicp_only_max_extrapolation_rotation_rad: 0.5
+
+    # ---- A. 多候補 initial guess ----
+    # 等速度モデルが頭脱したとき (急停止、 前回 align の誤対応) も静止仮定側で救済する。
+    gicp_only_enable_static_candidate: true
+    # ---- E. 等加速度候補 ----
+    # 過去 3 つの pose から jerk を計算してもう 1 ステップ加算した姿勢を候補に加える。
+    # 急加減速時の追従性を上げる。 計算量は最大 3 倍 (align 3 回)。
+    gicp_only_enable_acceleration_candidate: true
+
+    # ---- B. SE(3) サニティチェック (initial_guess 基準) ----
+    # align 結果 pose と initial_guess の SE(3) 差が以下を超えたら棄却 → initial_guess を採用。
+    # 高速回転中の正当な大きな補正もここで落ちるので、 max_extrapolation_* と同程度に設定。
+    gicp_only_max_correction_translation_m: 0.5
+    gicp_only_max_correction_rotation_rad: 0.3
+
+    # ---- B'. jerk サニティチェック (前回 step 比較) ----
+    # 「前回 step (N-1→N)」と「今回 align で得られた step (N→align)」の差が大きすぎたら棄却。
+    # 高速回転の正当な補正と一過性の誤対応ジャンプを区別したい場合に有効。
+    gicp_only_max_jerk_translation_m: 0.3
+    gicp_only_max_jerk_rotation_rad: 0.2
+
+    # ---- C. 静止検出 + align 抑制 ----
+    # 「直前 1 スキャン分の delta」 が両方とも閾値以下のスキャンが streak_required 回連続で
+    # align をスキップして pose 据え置き。 ドリフトを map に焼き込む事故を防ぐ。
+    gicp_only_stationary_translation_threshold_m: 0.01
+    gicp_only_stationary_rotation_threshold_rad: 0.01
+    gicp_only_stationary_streak_required: 3
+
+    # ---- D. SE(3) tangent space EMA ----
+    # 出力 pose を 「前回 filtered pose から align 結果まで alpha 分だけ近づける」 形で平滑化。
+    # 1.0 で無効、 0 で凍結。 並進と回転で別々に設定可。 やや平滑化の 0.7 を選択。
+    gicp_only_ema_alpha_translation: 0.7
+    gicp_only_ema_alpha_rotation: 0.7
 
     # xsens IMU は sensor_msgs/Imu の規約通り m/s² で出してくる。
     # Mid-360 (Livox) の g 単位スケールは適用しないこと。
@@ -122,4 +169,4 @@ pylot_lio:
 
     # PGO は有効。 IESKF の odometry 品質に応じて sigma を調整する。
     enable_pose_graph_optimization: true
-    pgo_optimize_every_n_keyframes: 2
+    pgo_optimize_every_n_keyframes: 5

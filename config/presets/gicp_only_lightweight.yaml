@@ -1,0 +1,42 @@
+# Preset: GICP-only ロバスト化の必要最低限版 (A + B' だけ)。
+#
+# gicp_only_robust.yaml から「計算コストが高い E (等加速度候補)」「平滑化で
+# 遅延が出る D (EMA)」「動きが緩い場面でしか効かない C (静止検出)」を抜き、
+# 「効果対コスト比が高い 2 つ」だけ残したチューニング。
+#
+# 有効化される機能:
+#   A. 多候補 initial guess  ........  enable_static_candidate (align 計算量 x2)
+#   B'. jerk サニティチェック ........  max_jerk_*
+#
+# A は「等速度モデル外挿が外れたとき静止仮定側で救済」、 B' は「前回 step に対して
+# 急変動した align 結果を棄却」 する。 この 2 つで 「一過性の誤対応」 と
+# 「等速度モデル頭脱」 の双方をカバーできる。
+#
+# B (initial_guess 基準のサニティチェック) は冗長になりがちなので外している。
+# 必要なら追加で max_correction_* を設定すれば OR 判定で併用される。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.3
+
+    map: "voxel_map"
+    map_voxel_size_m: 0.5
+    map_min_points_per_cell: 1
+
+    registration: "small_gicp_vgicp"
+    registration_max_iterations: 15
+    registration_max_correspondence_m: 2.0
+    registration_num_threads: 4
+
+    state_estimator: "gicp_only"
+
+    # 等速度モデル外挿のクランプ (デフォルト)。
+    gicp_only_max_extrapolation_translation_m: 1.0
+    gicp_only_max_extrapolation_rotation_rad: 0.5
+
+    # A. 多候補 initial guess。 align が 1 回追加されるので 2 倍の計算量。
+    gicp_only_enable_static_candidate: true
+
+    # B'. jerk サニティチェック。 計算コストはほぼゼロ。
+    gicp_only_max_jerk_translation_m: 0.3
+    gicp_only_max_jerk_rotation_rad: 0.2
