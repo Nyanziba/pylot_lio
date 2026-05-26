@@ -106,6 +106,8 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
     plain_gicp_config.max_iterations = config.registration_max_iterations;
     plain_gicp_config.max_correspondence_distance_m =
       config.registration_max_correspondence_m;
+    // small_gicp と共通の registration_num_threads を流用 (1 つのパラメータで両方制御)。
+    plain_gicp_config.num_threads = config.registration_num_threads;
     plain_gicp_config.enable_degenerate_regularization =
       config.enable_degenerate_regularization;
     plain_gicp_config.rotation_eigenvalue_threshold = config.rotation_eigenvalue_threshold;
@@ -137,6 +139,7 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
     fallback_config.max_iterations = config.registration_max_iterations;
     fallback_config.max_correspondence_distance_m =
       config.registration_max_correspondence_m;
+    fallback_config.num_threads = config.registration_num_threads;
     return std::make_unique<PlainGicpRegistration>(fallback_config);
   }
   throw std::invalid_argument(

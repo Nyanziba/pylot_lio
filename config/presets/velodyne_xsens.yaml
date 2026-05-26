@@ -37,7 +37,7 @@ pylot_lio:
     submap_random_seed: 12345
 
     # マッチング。 Velodyne の遠点を活かすため max_correspondence を 3m に伸ばす。
-    registration: "small_gicp_gicp"
+    registration: "plain_gicp"
     registration_max_correspondence_m: 3.0
     registration_max_iterations: 30
 
