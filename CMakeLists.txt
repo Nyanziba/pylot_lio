@@ -31,11 +31,60 @@ find_package(small_gicp QUIET)
 find_package(GTSAM QUIET)
 find_package(livox_ros_driver2 QUIET)
 
+# ------------------------------------------------------------
+# 3rdparty fallback: small_gicp が見つからない場合は in-tree の
+# submodule (3rdparty/small_gicp) を add_subdirectory で取り込む。
+# システムインストール (conda-forge / robostack) を優先するが、
+# それが無い環境でもビルドできるようにするためのフォールバック。
+# ------------------------------------------------------------
+if(NOT small_gicp_FOUND)
+  set(PYLOT_LIO_SMALL_GICP_SUBMODULE
+      "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/small_gicp")
+  if(EXISTS "${PYLOT_LIO_SMALL_GICP_SUBMODULE}/CMakeLists.txt")
+    message(STATUS "small_gicp not found via find_package; using bundled "
+                   "submodule at 3rdparty/small_gicp (pinned to v1.0.0).")
+    # small_gicp 自身のテスト・ベンチ・サンプルはビルドしない。
+    set(BUILD_HELPER OFF CACHE BOOL "" FORCE)
+    set(BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${PYLOT_LIO_SMALL_GICP_SUBMODULE} EXCLUDE_FROM_ALL)
+    set(small_gicp_FOUND TRUE)
+    set(PYLOT_LIO_SMALL_GICP_FROM_SUBMODULE TRUE)
+  else()
+    message(STATUS "small_gicp not found and 3rdparty/small_gicp submodule "
+                   "is not initialized; SmallGicpRegistration backend disabled. "
+                   "Run 'git submodule update --init --recursive' to enable.")
+  endif()
+endif()
+
 # IntelLLVM (icpx) を検出した場合のみ SYCL バックエンドをビルドする。
 # stock conda-forge clang / gcc では SYCL 不可。
 set(PYLOT_LIO_BUILD_SYCL OFF)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
   set(PYLOT_LIO_BUILD_SYCL ON)
+endif()
+
+# ------------------------------------------------------------
+# sycl_points (fateshelled/sycl_points, Apache-2.0): SYCL ベースの
+# header-only 点群処理ユーティリティ。 SYCL コンパイラ (= IntelLLVM)
+# のときだけ include path を pylot_lio_core に追加する。 sycl_points 側
+# は INTERFACE target を export していないので add_subdirectory ではなく
+# include path 直挿しで取り込む。
+# ------------------------------------------------------------
+set(PYLOT_LIO_HAS_SYCL_POINTS FALSE)
+if(PYLOT_LIO_BUILD_SYCL)
+  set(PYLOT_LIO_SYCL_POINTS_INCLUDE
+      "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/sycl_points/cpp/include")
+  if(IS_DIRECTORY "${PYLOT_LIO_SYCL_POINTS_INCLUDE}/sycl_points")
+    message(STATUS "Found 3rdparty/sycl_points headers at "
+                   "${PYLOT_LIO_SYCL_POINTS_INCLUDE}; SYCL backend can use them.")
+    set(PYLOT_LIO_HAS_SYCL_POINTS TRUE)
+  else()
+    message(WARNING "PYLOT_LIO_BUILD_SYCL is ON but 3rdparty/sycl_points is "
+                    "not initialized. Run 'git submodule update --init --recursive'.")
+  endif()
 endif()
 
 set(COMMON_ROS_DEPENDENCIES
@@ -132,6 +181,14 @@ if(PYLOT_LIO_BUILD_SYCL)
   target_compile_options(pylot_lio_core PRIVATE -fsycl)
   target_link_options(pylot_lio_core PRIVATE -fsycl)
   target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_SYCL=1)
+  # sycl_points (header-only) を include path として渡し、 識別用 macro を立てる。
+  # sycl_registration.cpp 内部で #ifdef PYLOT_LIO_HAS_SYCL_POINTS により
+  # sycl_points API (DegenerateRegularization 等) を呼べる。
+  if(PYLOT_LIO_HAS_SYCL_POINTS)
+    target_include_directories(pylot_lio_core SYSTEM PRIVATE
+      ${PYLOT_LIO_SYCL_POINTS_INCLUDE})
+    target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_SYCL_POINTS=1)
+  endif()
 else()
   target_sources(pylot_lio_core PRIVATE
     src/registration/sycl_registration_stub.cpp
