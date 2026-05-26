@@ -1,0 +1,9 @@
+# Preset: IMU を使わない最小ベースライン。比較用。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "random_sampling"
+    random_sampling_target_count: 4096
+    map: "kd_tree_map"
+    map_max_total_cells: 100000
+    registration: "plain_gicp"
+    state_estimator: "gicp_only"

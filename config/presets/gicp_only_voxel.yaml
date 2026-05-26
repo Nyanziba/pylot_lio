@@ -1,0 +1,16 @@
+# Preset: IMU 不使用ベースライン (kd_tree_map より一桁速い voxel_map 版)
+# kd_tree_map は毎フレーム KdTree を再構築するため map が大きいと数百 ms かかる。
+# こちらはオンライン共分散更新で挿入が O(N_points) で済み、リアルタイムに追従しやすい。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.4
+    map: "voxel_random_map"
+    map_voxel_size_m: 0.7
+    # 1 = 「1 点でも入ったボクセル」を対応点として使う。これより大きいと初期スキャン
+    # 群で対応点が確保できず、GICP が初期推定そのままを返してマップが原点に積み重なる。
+    map_min_points_per_cell: 1
+    registration: "small_gicp_vgicp"
+    registration_max_iterations: 15
+    registration_max_correspondence_m: 3.0
+    state_estimator: "gicp_only"

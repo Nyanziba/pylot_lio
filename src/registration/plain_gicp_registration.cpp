@@ -1,0 +1,211 @@
+// Copyright 2026 PyLoT Robotics. Licensed under the Apache License, Version 2.0.
+#include "pylot_lio/registration/plain_gicp_registration.hpp"
+
+#include <cmath>
+#include <sstream>
+
+#include <Eigen/Cholesky>
+#include <Eigen/Eigenvalues>
+
+#include "pylot_lio/lie_algebra.hpp"
+
+namespace pylot_lio
+{
+
+PlainGicpRegistration::PlainGicpRegistration(const Config & config)
+: config_(config)
+{
+}
+
+PlainGicpRegistration::AlignResult PlainGicpRegistration::align(
+  const PointCloud & source_cloud_body,
+  const IPointCloudMap & map_world,
+  const Eigen::Isometry3d & initial_transform_world_body)
+{
+  AlignResult result;
+  result.transform_world_body = initial_transform_world_body;
+
+  Eigen::Isometry3d current_transform = initial_transform_world_body;
+  const double max_correspondence_distance_squared =
+    config_.max_correspondence_distance_m * config_.max_correspondence_distance_m;
+
+  for (int iteration_index = 0; iteration_index < config_.max_iterations; ++iteration_index) {
+    // 法線方程式 H * delta = b を組み立てる。delta は SE(3) 接ベクトル [omega; rho]。
+    Eigen::Matrix<double, 6, 6> hessian_matrix = Eigen::Matrix<double, 6, 6>::Zero();
+    Eigen::Matrix<double, 6, 1> gradient_vector = Eigen::Matrix<double, 6, 1>::Zero();
+    double accumulated_cost = 0.0;
+    int valid_correspondences = 0;
+
+    for (const Point & source_point_body : source_cloud_body.points) {
+      if (!std::isfinite(source_point_body.x) ||
+          !std::isfinite(source_point_body.y) ||
+          !std::isfinite(source_point_body.z))
+      {
+        continue;
+      }
+      const Eigen::Vector3d source_in_body(
+        source_point_body.x, source_point_body.y, source_point_body.z);
+      const Eigen::Vector3d source_in_world = current_transform * source_in_body;
+
+      const PointCorrespondence correspondence = map_world.findNearestNeighbor(source_in_world);
+      if (!correspondence.valid ||
+          correspondence.squared_distance > max_correspondence_distance_squared)
+      {
+        continue;
+      }
+
+      // 残差: マップ平均 - 変換後 source。
+      const Eigen::Vector3d residual_world =
+        correspondence.target_point_world - source_in_world;
+
+      // Mahalanobis 重み: target_covariance の逆。
+      Eigen::Matrix3d information_matrix;
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(correspondence.target_covariance);
+      Eigen::Vector3d eigenvalues = solver.eigenvalues();
+      for (int axis = 0; axis < 3; ++axis) {
+        eigenvalues(axis) = 1.0 / std::max(eigenvalues(axis), 1e-9);
+      }
+      information_matrix = solver.eigenvectors() * eigenvalues.asDiagonal()
+        * solver.eigenvectors().transpose();
+
+      // Huber 重み (ロバスト化)。
+      const double mahalanobis_squared =
+        residual_world.transpose() * information_matrix * residual_world;
+      double robust_weight = 1.0;
+      if (mahalanobis_squared > config_.huber_threshold * config_.huber_threshold) {
+        robust_weight = config_.huber_threshold / std::sqrt(mahalanobis_squared);
+      }
+
+      // SE(3) 左摂動 T_new = delta_T * T_old の微分:
+      //   T_new(p) = delta_R * (R*p + t) + delta_t = source_in_world + omega^ * source_in_world + delta_t
+      //   d(T_new(p))/d(omega) = -skew(source_in_world)
+      //   d(T_new(p))/d(delta_t) = I
+      // 残差 r = target - T(p) なので
+      //   dr/d(omega)   =  skew(source_in_world)
+      //   dr/d(delta_t) = -I
+      // 重要: skew(R*p) ではなく skew(source_in_world = R*p + t) を使うこと。
+      // 並進 t が大きくなると両者は一致せず、誤ったヤコビアンは姿勢発散の原因になる。
+      Eigen::Matrix<double, 3, 6> jacobian_matrix;
+      jacobian_matrix.block<3, 3>(0, 0) = lie::skew(source_in_world);
+      jacobian_matrix.block<3, 3>(0, 3) = -Eigen::Matrix3d::Identity();
+
+      hessian_matrix.noalias() +=
+        robust_weight * jacobian_matrix.transpose() * information_matrix * jacobian_matrix;
+      gradient_vector.noalias() -=
+        robust_weight * jacobian_matrix.transpose() * information_matrix * residual_world;
+      accumulated_cost += robust_weight * mahalanobis_squared;
+      valid_correspondences += 1;
+    }
+
+    if (valid_correspondences < 6) {
+      // 解が一意に決まらない。終了。
+      break;
+    }
+
+    // 縮退正則化 (Tuna 2024, X-ICP). sycl_points::DegenerateRegularization と同等の処方を、
+    // 本実装の「回転は左乗算 / 並進は加算」decoupled 規約に合わせて自前で書き起こした。
+    // Apache-2.0, https://arxiv.org/abs/2408.11809
+    if (config_.enable_degenerate_regularization) {
+      // delta_twist: 「現在姿勢が initial_guess からどれだけ離れたか」
+      const Eigen::Matrix3d delta_rotation_matrix =
+        current_transform.linear() * initial_transform_world_body.linear().transpose();
+      Eigen::Matrix<double, 6, 1> delta_twist;
+      delta_twist.head<3>() = lie::logSO3(delta_rotation_matrix);
+      delta_twist.tail<3>() =
+        current_transform.translation() - initial_transform_world_body.translation();
+
+      const double inlier_count = static_cast<double>(valid_correspondences);
+      const double lambda = config_.regularization_base_factor * inlier_count;
+
+      Eigen::Matrix<double, 6, 6> hessian_penalty =
+        Eigen::Matrix<double, 6, 6>::Zero();
+
+      // 回転 3x3 ブロックの固有値分解。固有値が小さい方向 = 「点群幾何だけでは
+      // 拘束できていない回転自由度」なので、その方向だけ initial_guess に引き戻す。
+      if (config_.rotation_eigenvalue_threshold > 0.0) {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver_rotation(
+          hessian_matrix.block<3, 3>(0, 0));
+        if (solver_rotation.info() == Eigen::Success) {
+          for (int axis_index = 0; axis_index < 3; ++axis_index) {
+            const double normalized_eigenvalue =
+              solver_rotation.eigenvalues()(axis_index) / inlier_count;
+            if (normalized_eigenvalue < config_.rotation_eigenvalue_threshold) {
+              Eigen::Matrix<double, 6, 1> degenerate_direction =
+                Eigen::Matrix<double, 6, 1>::Zero();
+              degenerate_direction.head<3>() =
+                solver_rotation.eigenvectors().col(axis_index);
+              hessian_penalty +=
+                lambda * degenerate_direction * degenerate_direction.transpose();
+            }
+          }
+        }
+      }
+      // 並進 3x3 ブロックも同様 (廊下方向など並進が拘束されない場面で効く)。
+      if (config_.translation_eigenvalue_threshold > 0.0) {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver_translation(
+          hessian_matrix.block<3, 3>(3, 3));
+        if (solver_translation.info() == Eigen::Success) {
+          for (int axis_index = 0; axis_index < 3; ++axis_index) {
+            const double normalized_eigenvalue =
+              solver_translation.eigenvalues()(axis_index) / inlier_count;
+            if (normalized_eigenvalue < config_.translation_eigenvalue_threshold) {
+              Eigen::Matrix<double, 6, 1> degenerate_direction =
+                Eigen::Matrix<double, 6, 1>::Zero();
+              degenerate_direction.tail<3>() =
+                solver_translation.eigenvectors().col(axis_index);
+              hessian_penalty +=
+                lambda * degenerate_direction * degenerate_direction.transpose();
+            }
+          }
+        }
+      }
+      hessian_matrix += hessian_penalty;
+      // 本実装の gradient_vector は -J^T W r (= 負勾配) 規約のため、
+      // sycl_points の `b += H_pen * delta_twist` (solve(H, -b) 規約) と等価な形は
+      // gradient_vector -= H_pen * delta_twist となる。
+      gradient_vector -= hessian_penalty * delta_twist;
+    }
+
+    // 解く: hessian * delta = gradient ではなく、
+    // 上の組み立てで b = -J^T W r, H = J^T W J なので delta = H^{-1} b ではなく、
+    // r ~ -J * delta から得る最小化方向 delta = -H^{-1} (J^T W r)
+    // → ここでは delta = -H^{-1} gradient_vector ではなく
+    //   ↑ gradient_vector を符号反転して詰めているので delta = H^{-1} * gradient_vector
+    // (符号は上の noalias 部分で揃えてある)
+    const Eigen::Matrix<double, 6, 1> delta_vector =
+      hessian_matrix.ldlt().solve(gradient_vector);
+
+    const Eigen::Vector3d delta_rotation = delta_vector.head<3>();
+    const Eigen::Vector3d delta_translation = delta_vector.tail<3>();
+
+    Eigen::Isometry3d delta_transform = Eigen::Isometry3d::Identity();
+    delta_transform.linear() = lie::expSO3(delta_rotation);
+    delta_transform.translation() = delta_translation;
+    current_transform = delta_transform * current_transform;
+    current_transform.linear() = lie::normalizeRotation(current_transform.linear());
+
+    result.iterations = iteration_index + 1;
+    result.final_cost = accumulated_cost;
+    result.num_correspondences = valid_correspondences;
+
+    if (delta_translation.norm() < config_.convergence_translation_m &&
+        delta_rotation.norm() < config_.convergence_rotation_rad)
+    {
+      result.converged = true;
+      break;
+    }
+  }
+
+  result.transform_world_body = current_transform;
+  return result;
+}
+
+std::string PlainGicpRegistration::describe() const
+{
+  std::ostringstream oss;
+  oss << "plain_gicp:max_iter=" << config_.max_iterations
+      << ",max_corr=" << config_.max_correspondence_distance_m;
+  return oss.str();
+}
+
+}  // namespace pylot_lio

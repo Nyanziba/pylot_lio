@@ -1,0 +1,12 @@
+# Preset: IESKF + small_gicp VGICP + VoxelRandomMap (リザーバサンプリング)
+# VoxelMap (ガウス 1 個/ボクセル) との比較で、生点群を保持するマップの効果を見る。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.3
+    map: "voxel_random_map"
+    map_voxel_size_m: 0.5
+    voxel_random_map_max_points_per_voxel: 8
+    voxel_random_map_k_nearest_for_covariance: 8
+    registration: "small_gicp_vgicp"
+    state_estimator: "ieskf"

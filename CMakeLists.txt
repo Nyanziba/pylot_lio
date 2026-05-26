@@ -1,0 +1,237 @@
+cmake_minimum_required(VERSION 3.16)
+project(pylot_lio)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ============================================================
+# Dependencies
+# ============================================================
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_eigen REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(pcl_ros REQUIRED)
+
+find_package(PCL REQUIRED COMPONENTS common io filters kdtree)
+find_package(Eigen3 REQUIRED)
+find_package(OpenMP QUIET)
+find_package(small_gicp QUIET)
+find_package(GTSAM QUIET)
+find_package(livox_ros_driver2 QUIET)
+
+# IntelLLVM (icpx) を検出した場合のみ SYCL バックエンドをビルドする。
+# stock conda-forge clang / gcc では SYCL 不可。
+set(PYLOT_LIO_BUILD_SYCL OFF)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+  set(PYLOT_LIO_BUILD_SYCL ON)
+endif()
+
+set(COMMON_ROS_DEPENDENCIES
+  rclcpp
+  std_msgs
+  geometry_msgs
+  nav_msgs
+  sensor_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  tf2_eigen
+  pcl_conversions
+  pcl_ros
+)
+
+# ============================================================
+# Core library: backend-agnostic primitives
+# (lie_algebra, voxel_grid_preprocessor, voxel_map, kd_tree_map,
+#  random_sampling_preprocessor, normal_map, IESKF, HGO, GICP-only)
+# ============================================================
+set(PYLOT_LIO_CORE_SOURCES
+  src/lie_algebra.cpp
+  src/preprocess/voxel_grid_preprocessor.cpp
+  src/preprocess/random_sampling_preprocessor.cpp
+  src/preprocess/voxel_random_sampling_preprocessor.cpp
+  src/map/voxel_map.cpp
+  src/map/kd_tree_map.cpp
+  src/map/normal_map.cpp
+  src/map/voxel_random_map.cpp
+  src/map/voxel_keyframe_submap_map.cpp
+  src/registration/plain_gicp_registration.cpp
+  src/estimator/ieskf_estimator.cpp
+  src/estimator/hgo_estimator.cpp
+  src/estimator/gicp_only_estimator.cpp
+  src/keyframe/distance_keyframe_selector.cpp
+  src/livox_conversion.cpp
+  src/loop/scan_context.cpp
+  src/loop/scan_context_loop_detector.cpp
+  src/loop/loop_closure_icp.cpp
+  src/factory.cpp
+)
+
+add_library(pylot_lio_core SHARED ${PYLOT_LIO_CORE_SOURCES})
+target_include_directories(pylot_lio_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${EIGEN3_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
+)
+ament_target_dependencies(pylot_lio_core ${COMMON_ROS_DEPENDENCIES})
+target_link_libraries(pylot_lio_core ${PCL_LIBRARIES})
+
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(pylot_lio_core OpenMP::OpenMP_CXX)
+endif()
+
+# ============================================================
+# Optional backend: small_gicp registration
+# ============================================================
+if(small_gicp_FOUND)
+  target_sources(pylot_lio_core PRIVATE
+    src/registration/small_gicp_registration.cpp
+  )
+  target_link_libraries(pylot_lio_core small_gicp::small_gicp)
+  target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_SMALL_GICP=1)
+else()
+  message(STATUS "small_gicp not found; SmallGicpRegistration backend disabled.")
+endif()
+
+# ============================================================
+# Optional backend: GTSAM pose graph optimization
+# ============================================================
+if(GTSAM_FOUND)
+  target_sources(pylot_lio_core PRIVATE
+    src/loop/pose_graph_optimizer.cpp
+  )
+  target_link_libraries(pylot_lio_core gtsam)
+  target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_GTSAM=1)
+else()
+  target_sources(pylot_lio_core PRIVATE
+    src/loop/pose_graph_optimizer_stub.cpp
+  )
+  message(STATUS "GTSAM not found; PoseGraphOptimizer falls back to stub (no-op).")
+endif()
+
+# ============================================================
+# Optional backend: SYCL registration (Intel oneAPI / IntelLLVM only)
+# ============================================================
+if(PYLOT_LIO_BUILD_SYCL)
+  target_sources(pylot_lio_core PRIVATE
+    src/registration/sycl_registration.cpp
+  )
+  target_compile_options(pylot_lio_core PRIVATE -fsycl)
+  target_link_options(pylot_lio_core PRIVATE -fsycl)
+  target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_SYCL=1)
+else()
+  target_sources(pylot_lio_core PRIVATE
+    src/registration/sycl_registration_stub.cpp
+  )
+  message(STATUS "SYCL compiler not detected; SyclRegistration backend uses CPU fallback stub.")
+endif()
+
+# ============================================================
+# Optional: Livox CustomMsg subscription support
+# ============================================================
+if(livox_ros_driver2_FOUND)
+  message(STATUS "livox_ros_driver2 found; CustomMsg input format enabled.")
+  target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_LIVOX_DRIVER=1)
+else()
+  message(STATUS "livox_ros_driver2 not found; only PointCloud2 input format will work.")
+endif()
+
+# ============================================================
+# lio_node executable
+# ============================================================
+add_executable(lio_node src/lio_node.cpp)
+if(livox_ros_driver2_FOUND)
+  ament_target_dependencies(lio_node ${COMMON_ROS_DEPENDENCIES} livox_ros_driver2)
+else()
+  ament_target_dependencies(lio_node ${COMMON_ROS_DEPENDENCIES})
+endif()
+target_link_libraries(lio_node pylot_lio_core)
+
+# ============================================================
+# Install
+# ============================================================
+install(TARGETS pylot_lio_core
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(TARGETS lio_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY include/
+  DESTINATION include
+)
+
+install(DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/run_benchmark.py
+  scripts/compute_relative_metrics.py
+  scripts/make_dashboard.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+ament_export_include_directories(include)
+ament_export_libraries(pylot_lio_core)
+ament_export_dependencies(${COMMON_ROS_DEPENDENCIES} PCL Eigen3)
+
+# ============================================================
+# Tests
+# ============================================================
+if(BUILD_TESTING)
+  # ament_lint_auto はスタイル差分を大量に吐き本パッケージの機能検証ノイズを増やすため意図的に外す。
+  # gtest による純ロジック単体テストのみを採用する。
+  find_package(ament_cmake_gtest REQUIRED)
+
+  set(PYLOT_LIO_GTESTS
+    test_lie_algebra
+    test_voxel_grid_preprocessor
+    test_random_sampling_preprocessor
+    test_voxel_random_sampling_preprocessor
+    test_voxel_map
+    test_voxel_random_map
+    test_kd_tree_map
+    test_ieskf_estimator
+    test_gicp_only_estimator
+    test_factory
+    test_plain_gicp_degenerate
+    test_distance_keyframe_selector
+    test_voxel_keyframe_submap
+    test_scan_context
+    test_pose_graph_optimizer
+    test_livox_conversion
+  )
+
+  foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)
+    ament_add_gtest(${gtest_name} test/${gtest_name}.cpp)
+    if(TARGET ${gtest_name})
+      target_link_libraries(${gtest_name} pylot_lio_core)
+    endif()
+  endforeach()
+
+  if(small_gicp_FOUND)
+    ament_add_gtest(test_small_gicp_registration test/test_small_gicp_registration.cpp)
+    if(TARGET test_small_gicp_registration)
+      target_link_libraries(test_small_gicp_registration pylot_lio_core)
+    endif()
+  endif()
+endif()
+
+ament_package()

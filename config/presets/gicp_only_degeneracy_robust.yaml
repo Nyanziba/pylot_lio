@@ -1,0 +1,31 @@
+# Preset: 縮退方向 Tikhonov 正則化 (Tuna 2024 X-ICP) を有効にした gicp_only。
+# 廊下や対称構造での姿勢発散 (= 回転自由度が点群幾何から拘束されないため
+# Hessian が悪条件で最適化が暴れる) に対する処方。
+#
+# 参考: sycl_points::DegenerateRegularization
+#       (Apache-2.0, https://arxiv.org/abs/2408.11809)
+#
+# 動作原理:
+#   6x6 Hessian を 回転 3x3 + 並進 3x3 のブロック対角で固有値分解し、
+#   inlier 数で正規化した固有値が threshold 未満の方向 (= 縮退方向) だけ
+#   Tikhonov ペナルティを加える。well-conditioned 方向には触らない。
+#   非縮退時はオリジナルの GICP と完全に同じ解になる。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.4
+    map: "voxel_map"
+    map_voxel_size_m: 0.7
+    map_min_points_per_cell: 3
+    registration: "small_gicp_vgicp"
+    registration_max_iterations: 30
+    registration_max_correspondence_m: 3.0
+    # 縮退正則化 ON
+    enable_degenerate_regularization: true
+    # 固有値しきい値 (inlier 数で正規化した値と比較)。小さくすると正則化される方向が
+    # 増え、初期推定への引き戻しが強くなる。大きすぎると非縮退方向にも干渉して精度が落ちる。
+    rotation_eigenvalue_threshold: 20.0
+    translation_eigenvalue_threshold: 1.0
+    # ペナルティ全体の倍率。inlier 数も掛かるので 1.0 でも十分強い。
+    regularization_base_factor: 1.0
+    state_estimator: "gicp_only"

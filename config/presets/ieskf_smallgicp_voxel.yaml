@@ -1,0 +1,9 @@
+# Preset: 標準推奨構成。FAST-LIO2 系の IESKF + small_gicp VGICP + VoxelMap。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.3
+    map: "voxel_map"
+    map_voxel_size_m: 0.5
+    registration: "small_gicp_vgicp"
+    state_estimator: "ieskf"

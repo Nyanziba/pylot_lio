@@ -1,0 +1,145 @@
+# pylot_lio: Livox Mid-360 デフォルトパラメータ
+# プリセットファイル (config/presets/*.yaml) が個別パラメータを上書きする想定。
+pylot_lio:
+  ros__parameters:
+    # I/O
+    # input_cloud_format: "pointcloud2" (sensor_msgs/PointCloud2) or
+    #                     "livox_custom" (livox_ros_driver2/msg/CustomMsg)
+    # 'livox_custom' は package.xml の livox_ros_driver2 がビルド対象になっている環境のみ動作。
+    input_cloud_format: "livox_custom"
+    input_cloud_topic: "/livox/lidar"
+    input_imu_topic: "/livox/imu"
+    output_odom_topic: "/lio/odom"
+    output_cloud_topic: "/lio/cloud_world"
+    output_diag_topic: "/lio/diag"
+    world_frame_id: "world"
+    body_frame_id: "base_link"
+    publish_tf: true
+
+    # 前処理
+    preprocessor: "voxel_grid"          # voxel_grid | random_sampling | voxel_random_sampling
+    voxel_grid_size_m: 0.3
+    random_sampling_target_count: 8192
+    # voxel_random_sampling 専用: 各 voxel から「実点 1 個」をランダム選択。
+    # voxel_grid (重心) との違いは「実点を保つ」こと → ICP/法線推定がノイズに引かれにくい。
+    # voxel サイズは voxel_grid_size_m を共有する。 0 でマシン乱数。
+    voxel_random_sampling_seed: 12345
+
+    # マップ
+    map: "voxel_keyframe_submap"
+      # voxel_map | normal_map | kd_tree_map | voxel_random_map | voxel_keyframe_submap
+    map_voxel_size_m: 0.5
+    map_min_points_per_cell: 5
+    map_max_total_cells: 200000
+    # voxel_random_map 用 (他 map では無視される)
+    voxel_random_map_max_points_per_voxel: 8
+    voxel_random_map_k_nearest_for_covariance: 8
+    # voxel_keyframe_submap 用 (他 map では無視される)
+    # sliding window: registration target に含める直近キーフレーム数
+    submap_window_size: 20
+    # 確定 submap (loop closure 用の内部スナップショット) を何キーフレームごとに切るか
+    submap_finalize_size: 20
+    submap_max_points_per_cell: 32
+    submap_k_nearest_for_covariance: 8
+    # cell_sampling_mode:
+    #   "keep_up_to_n" (既定) → max_points_per_cell まで貯める。 後方互換
+    #   "random_one"          → セルに 1 点だけ保持 (reservoir sampling)。 メモリ/PCD 激減
+    submap_cell_sampling_mode: "keep_up_to_n"
+    submap_random_seed: 12345
+
+    # マッチング
+    registration: "small_gicp_vgicp"
+      # plain_gicp | small_gicp_gicp | small_gicp_vgicp | sycl
+    registration_max_correspondence_m: 2.0
+    registration_num_threads: 4
+    registration_max_iterations: 30
+
+    # 状態推定
+    state_estimator: "ieskf"            # ieskf | hgo | gicp_only
+
+    # Livox Mid-360 の IMU は linear_acceleration を g 単位で出してくる (静止時 acc.z ≈ 1.0)。
+    # sensor_msgs/Imu の規約 (m/s²) に合わせて 9.80665 倍してから estimator に渡す。
+    # 規約通りの IMU の場合は 1.0 を指定すること。
+    imu_acceleration_scale: 9.80665
+
+    # IESKF / HGO 用: 重力の大きさ (m/s²)。 Super-LIO livox_360.yaml と同値。
+    # 起動時 IMU 平均から方向だけ取り、 大きさはこの値で固定 → z drift を抑える。
+    gravity_norm: 9.7946
+
+    # LiDAR ↔ IMU extrinsic (Super-LIO lio.extrinsic.lidar_imu と同じ定義)。
+    # 「LiDAR 点を IMU frame に持ってくる」変換。 Mid-360 内蔵 IMU のメーカー公開値。
+    extrinsic_translation_imu_from_lidar_x: -0.011
+    extrinsic_translation_imu_from_lidar_y: -0.02329
+    extrinsic_translation_imu_from_lidar_z: 0.04412
+    # 9 要素・行優先。 Mid-360 は LiDAR=IMU 同位相なので identity。
+    extrinsic_rotation_imu_from_lidar_row_major: [1.0, 0.0, 0.0,
+                                                  0.0, 1.0, 0.0,
+                                                  0.0, 0.0, 1.0]
+
+    # extrinsic_source:
+    #   "config" → 下の extrinsic_*_imu_from_lidar を IESKF に直接渡す (既定)
+    #   "tf"     → 起動時 1 回だけ TF tree から lookupTransform(imu_frame_id, lidar_frame_id)
+    #              し、 結果で extrinsic を上書きする。 失敗時は "config" にフォールバック
+    # robot_state_publisher が同じ TF を提供している環境では "tf" を選ぶと
+    # yaml と URDF の二重管理を解消できる。
+    extrinsic_source: "config"
+    extrinsic_tf_lookup_timeout_s: 2.0
+
+    # PCD 自動保存: keyframe 採択ごとに「形成 map 全体」を 1 ファイルに上書き。
+    # map=voxel_keyframe_submap 以外では no-op。 重い書き込みのため、 keyframe 採択頻度が
+    # 高い設定 (= keyframe_min_translation_m が小さい) と IO 詰まりリスク。
+    enable_pcd_auto_save: false
+    output_pcd_path: "/tmp/pylot_lio_map.pcd"
+    output_pcd_binary: true
+
+    # Static TF: 起動時 1 回だけ base_link → lidar_frame / imu_frame を出す。
+    # URDF / robot_state_publisher が同じ TF を提供している環境では false にして抑制する。
+    publish_sensor_static_tf: false
+    lidar_frame_id: "livox_frame"
+    imu_frame_id: "livox_imu"
+    # base_link → lidar_frame (ロボット固有の取り付け位置)。 ベース原点を LiDAR 中心に
+    # 置く構成を既定とする。 必要に応じてロボット側の URDF と合わせて上書き。
+    base_link_to_lidar_translation_x: 0.0
+    base_link_to_lidar_translation_y: 0.0
+    base_link_to_lidar_translation_z: 0.0
+    base_link_to_lidar_rotation_row_major: [1.0, 0.0, 0.0,
+                                            0.0, 1.0, 0.0,
+                                            0.0, 0.0, 1.0]
+    # base_link → imu_frame。 Mid-360 は LiDAR=IMU 同筐体で datasheet 公開の lever arm
+    # (LiDAR 原点 → IMU = -0.011, -0.02329, 0.04412 m) を反映。 base_link を LiDAR 中心
+    # に置いた既定では IMU はその上ぶんずれる。
+    base_link_to_imu_translation_x: -0.011
+    base_link_to_imu_translation_y: -0.02329
+    base_link_to_imu_translation_z: 0.04412
+    base_link_to_imu_rotation_row_major: [1.0, 0.0, 0.0,
+                                          0.0, 1.0, 0.0,
+                                          0.0, 0.0, 1.0]
+
+    # Loop closure 検出 (Scan Context)。 検出のみで補正はまだ適用しない (PR3 で実装予定)。
+    # 検出されると /lio/loop_candidates に JSON で publish される。
+    enable_loop_detection: true
+    loop_num_rings: 60
+    loop_num_sectors: 20
+    loop_max_radius_m: 80.0
+    loop_min_radius_m: 0.5
+    loop_ring_key_top_k: 10
+    # Scan Context 距離しきい値。 0.2 だと false positive が連発するので 0.10 に絞る。
+    loop_score_threshold: 0.10
+    loop_exclude_recent_kf: 50
+    # Loop closure 受け入れゲート (PGO 爆発防止)
+    loop_icp_max_fitness_score: 1.0
+    loop_icp_max_translation_jump_m: 10.0
+    loop_match_cooldown_keyframes: 5
+    output_loop_candidates_topic: "/lio/loop_candidates"
+
+    # Pose Graph Optimization (GTSAM ISAM2)。 loop 検出ごと、 または N keyframe ごとに
+    # 1 step 回し、 最新 keyframe の修正姿勢を estimator に setPose で上書きする。
+    enable_pose_graph_optimization: false
+    pgo_optimize_every_n_keyframes: 10
+    loop_icp_voxel_size_m: 0.5
+    loop_icp_max_correspondence_m: 5.0
+    loop_icp_max_iterations: 50
+    pgo_odometry_sigma_rot_rad: 0.01
+    pgo_odometry_sigma_trans_m: 0.05
+    pgo_loop_sigma_rot_rad: 0.05
+    pgo_loop_sigma_trans_m: 0.1
