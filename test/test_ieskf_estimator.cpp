@@ -94,7 +94,7 @@ TEST(IeskfEstimator, ExtrinsicTranslationShiftsScanReferenceFrame)
     point.z = 0.0f;
     cloud.push_back(point);
   }
-  estimator.updateWithScan(cloud, map, registration);
+  estimator.updateWithScan(cloud, map, registration, 0);
   EXPECT_EQ(map.size(), 0u);
 }
 
@@ -112,7 +112,7 @@ TEST(IeskfEstimator, ScanUpdateLeavesMapInsertionToCaller)
   PlainGicpRegistration registration(PlainGicpRegistration::Config{});
 
   const auto plane_cloud = makePlaneCloud(0.0);
-  estimator.updateWithScan(plane_cloud, map, registration);
+  estimator.updateWithScan(plane_cloud, map, registration, 0);
   EXPECT_EQ(map.size(), 0u);
 }
 

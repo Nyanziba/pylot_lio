@@ -179,7 +179,8 @@ void IeskfEstimator::predictWithImu(const ImuSample & imu_sample)
 void IeskfEstimator::updateWithScan(
   const PointCloud & scan_cloud_body,
   IPointCloudMap & map_world,
-  IRegistration & /*registration*/)
+  IRegistration & /*registration*/,
+  int64_t /*scan_timestamp_ns*/)
 {
   // Full 15D IESKF update (Fast-LIO2 流):
   //   1) Gauss-Newton で scan による pose 観測 (δθ_obs, δt_obs) を求める

@@ -644,7 +644,8 @@ private:
   {
     auto preprocessed_cloud = backends_.preprocessor->process(raw_cloud);
     backends_.state_estimator->updateWithScan(
-      *preprocessed_cloud, *backends_.point_cloud_map, *backends_.registration);
+      *preprocessed_cloud, *backends_.point_cloud_map, *backends_.registration,
+      stamp.nanoseconds());
 
     // Keyframe ゲート: 直前 keyframe との SE(3) 差分が閾値を超えたとき (= 初回・大きく移動・回転)
     // だけマップに挿入する。停止中は挿入しないので重複点群の肥大化を防げる。
