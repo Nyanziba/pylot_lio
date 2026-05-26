@@ -181,7 +181,32 @@ IStateEstimatorPtr buildStateEstimator(const LioBackendConfig & config)
     return std::make_unique<HgoEstimator>(hgo_config);
   }
   if (config.state_estimator_name == "gicp_only") {
-    return std::make_unique<GicpOnlyEstimator>();
+    GicpOnlyEstimator::Config gicp_only_config;
+    gicp_only_config.max_extrapolation_translation_m =
+      config.gicp_only_max_extrapolation_translation_m;
+    gicp_only_config.max_extrapolation_rotation_rad =
+      config.gicp_only_max_extrapolation_rotation_rad;
+    gicp_only_config.enable_static_candidate =
+      config.gicp_only_enable_static_candidate;
+    gicp_only_config.enable_acceleration_candidate =
+      config.gicp_only_enable_acceleration_candidate;
+    gicp_only_config.max_correction_translation_m =
+      config.gicp_only_max_correction_translation_m;
+    gicp_only_config.max_correction_rotation_rad =
+      config.gicp_only_max_correction_rotation_rad;
+    gicp_only_config.max_jerk_translation_m =
+      config.gicp_only_max_jerk_translation_m;
+    gicp_only_config.max_jerk_rotation_rad =
+      config.gicp_only_max_jerk_rotation_rad;
+    gicp_only_config.stationary_translation_threshold_m =
+      config.gicp_only_stationary_translation_threshold_m;
+    gicp_only_config.stationary_rotation_threshold_rad =
+      config.gicp_only_stationary_rotation_threshold_rad;
+    gicp_only_config.stationary_streak_required =
+      config.gicp_only_stationary_streak_required;
+    gicp_only_config.ema_alpha_translation = config.gicp_only_ema_alpha_translation;
+    gicp_only_config.ema_alpha_rotation = config.gicp_only_ema_alpha_rotation;
+    return std::make_unique<GicpOnlyEstimator>(gicp_only_config);
   }
   throw std::invalid_argument(
     "Unknown state_estimator_name: " + config.state_estimator_name);

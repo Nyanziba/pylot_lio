@@ -98,6 +98,22 @@ struct LioBackendConfig
   // state estimator
   std::string state_estimator_name = "ieskf";    // ieskf | hgo | gicp_only
 
+  // gicp_only 専用パラメータ。 ROS yaml 上は 'gicp_only_*' プレフィックスで宣言する。
+  // 各機能は 0 / false / 1.0 などのデフォルトで「無効」になる後方互換設計。
+  double gicp_only_max_extrapolation_translation_m = 1.0;
+  double gicp_only_max_extrapolation_rotation_rad = 0.5;
+  bool gicp_only_enable_static_candidate = false;
+  bool gicp_only_enable_acceleration_candidate = false;
+  double gicp_only_max_correction_translation_m = 0.0;
+  double gicp_only_max_correction_rotation_rad = 0.0;
+  double gicp_only_max_jerk_translation_m = 0.0;
+  double gicp_only_max_jerk_rotation_rad = 0.0;
+  double gicp_only_stationary_translation_threshold_m = 0.0;
+  double gicp_only_stationary_rotation_threshold_rad = 0.0;
+  int gicp_only_stationary_streak_required = 3;
+  double gicp_only_ema_alpha_translation = 1.0;
+  double gicp_only_ema_alpha_rotation = 1.0;
+
   // IMU linear_acceleration の単位補正係数。 sensor_msgs/Imu の規約は m/s² だが、
   // Livox driver 等は実際には g 単位で出してくるケースがある (静止時 acc.z ≈ 1.0)。
   // その場合は 9.80665 を指定して m/s² にスケールアップする。 規約通りの IMU では 1.0。
