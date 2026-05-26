@@ -1,6 +1,7 @@
 // Copyright 2026 PyLoT Robotics. Licensed under the Apache License, Version 2.0.
 #include "pylot_lio/registration/plain_gicp_registration.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 #include <vector>
@@ -62,8 +63,10 @@ PlainGicpRegistration::AlignResult PlainGicpRegistration::align(
 
     const int num_source_points = static_cast<int>(source_cloud_body.points.size());
 
+    // actual_num_threads == 1 のときは並列領域に入らず逐次経路を取る (デバッグ容易性 +
+    // OpenMP runtime overhead 削減)。 _OPENMP 未定義時もこの分岐で逐次パス。
 #ifdef _OPENMP
-    #pragma omp parallel num_threads(actual_num_threads)
+    #pragma omp parallel num_threads(actual_num_threads) if(actual_num_threads > 1)
 #endif
     {
       int thread_id = 0;

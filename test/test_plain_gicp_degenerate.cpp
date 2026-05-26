@@ -73,6 +73,9 @@ TEST(DegenerateRegularization, DisabledByDefault)
 
 TEST(PlainGicpOpenMP, SingleAndMultiThreadProduceEquivalentResults)
 {
+#ifndef _OPENMP
+  GTEST_SKIP() << "OpenMP not enabled in this build; multi-thread path is not exercised.";
+#endif
   // OpenMP 並列実装は単スレッド版と数値的に同じ結果を返さねばならない。
   // 平面格子マップを target、 そこに小さな並進 (5cm, 3cm, 0) を加えた点群を source として
   // align する。 期待される結果はマップ原点に近い位置。 num_threads=1 と num_threads=4
