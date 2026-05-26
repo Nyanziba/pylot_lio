@@ -338,18 +338,6 @@ private:
     backend_config_.registration_max_iterations =
       declare_parameter<int>(
         "registration_max_iterations", backend_config_.registration_max_iterations);
-    backend_config_.registration_convergence_translation_m =
-      declare_parameter<double>(
-        "registration_convergence_translation_m",
-        backend_config_.registration_convergence_translation_m);
-    backend_config_.registration_convergence_rotation_rad =
-      declare_parameter<double>(
-        "registration_convergence_rotation_rad",
-        backend_config_.registration_convergence_rotation_rad);
-    backend_config_.registration_huber_threshold =
-      declare_parameter<double>(
-        "registration_huber_threshold",
-        backend_config_.registration_huber_threshold);
     backend_config_.enable_degenerate_regularization =
       declare_parameter<bool>(
         "enable_degenerate_regularization",
@@ -370,61 +358,6 @@ private:
     backend_config_.state_estimator_name =
       declare_parameter<std::string>(
         "state_estimator", backend_config_.state_estimator_name);
-
-    // gicp_only 専用パラメータ。 デフォルトは無効化される値なので、
-    // ieskf / hgo を使うときは触らなくて良い。
-    backend_config_.gicp_only_max_extrapolation_translation_m =
-      declare_parameter<double>(
-        "gicp_only_max_extrapolation_translation_m",
-        backend_config_.gicp_only_max_extrapolation_translation_m);
-    backend_config_.gicp_only_max_extrapolation_rotation_rad =
-      declare_parameter<double>(
-        "gicp_only_max_extrapolation_rotation_rad",
-        backend_config_.gicp_only_max_extrapolation_rotation_rad);
-    backend_config_.gicp_only_enable_static_candidate =
-      declare_parameter<bool>(
-        "gicp_only_enable_static_candidate",
-        backend_config_.gicp_only_enable_static_candidate);
-    backend_config_.gicp_only_enable_acceleration_candidate =
-      declare_parameter<bool>(
-        "gicp_only_enable_acceleration_candidate",
-        backend_config_.gicp_only_enable_acceleration_candidate);
-    backend_config_.gicp_only_max_correction_translation_m =
-      declare_parameter<double>(
-        "gicp_only_max_correction_translation_m",
-        backend_config_.gicp_only_max_correction_translation_m);
-    backend_config_.gicp_only_max_correction_rotation_rad =
-      declare_parameter<double>(
-        "gicp_only_max_correction_rotation_rad",
-        backend_config_.gicp_only_max_correction_rotation_rad);
-    backend_config_.gicp_only_max_jerk_translation_m =
-      declare_parameter<double>(
-        "gicp_only_max_jerk_translation_m",
-        backend_config_.gicp_only_max_jerk_translation_m);
-    backend_config_.gicp_only_max_jerk_rotation_rad =
-      declare_parameter<double>(
-        "gicp_only_max_jerk_rotation_rad",
-        backend_config_.gicp_only_max_jerk_rotation_rad);
-    backend_config_.gicp_only_stationary_translation_threshold_m =
-      declare_parameter<double>(
-        "gicp_only_stationary_translation_threshold_m",
-        backend_config_.gicp_only_stationary_translation_threshold_m);
-    backend_config_.gicp_only_stationary_rotation_threshold_rad =
-      declare_parameter<double>(
-        "gicp_only_stationary_rotation_threshold_rad",
-        backend_config_.gicp_only_stationary_rotation_threshold_rad);
-    backend_config_.gicp_only_stationary_streak_required =
-      declare_parameter<int>(
-        "gicp_only_stationary_streak_required",
-        backend_config_.gicp_only_stationary_streak_required);
-    backend_config_.gicp_only_ema_alpha_translation =
-      declare_parameter<double>(
-        "gicp_only_ema_alpha_translation",
-        backend_config_.gicp_only_ema_alpha_translation);
-    backend_config_.gicp_only_ema_alpha_rotation =
-      declare_parameter<double>(
-        "gicp_only_ema_alpha_rotation",
-        backend_config_.gicp_only_ema_alpha_rotation);
 
     backend_config_.imu_acceleration_scale =
       declare_parameter<double>(

@@ -88,12 +88,6 @@ struct LioBackendConfig
   int registration_num_threads = 4;
   int registration_max_iterations = 30;
 
-  // plain_gicp 固有のチューニング (small_gicp 系では無視される)。
-  // Gauss-Newton の停止条件と Huber ロバスト重みの転換点を ROS パラメータから触れる。
-  double registration_convergence_translation_m = 1e-4;
-  double registration_convergence_rotation_rad = 1e-4;
-  double registration_huber_threshold = 1.0;
-
   // plain_gicp 用: 縮退方向 Tikhonov 正則化 (X-ICP / sycl_points 流)。
   // 廊下や対称的な環境で回転/並進が拘束されないときに姿勢が暴れるのを防ぐ。
   bool enable_degenerate_regularization = false;
@@ -103,22 +97,6 @@ struct LioBackendConfig
 
   // state estimator
   std::string state_estimator_name = "ieskf";    // ieskf | hgo | gicp_only
-
-  // gicp_only 専用パラメータ。 ROS yaml 上は 'gicp_only_*' プレフィックスで宣言する。
-  // 各機能は 0 / false / 1.0 などのデフォルトで「無効」になる後方互換設計。
-  double gicp_only_max_extrapolation_translation_m = 1.0;
-  double gicp_only_max_extrapolation_rotation_rad = 0.5;
-  bool gicp_only_enable_static_candidate = false;
-  bool gicp_only_enable_acceleration_candidate = false;
-  double gicp_only_max_correction_translation_m = 0.0;
-  double gicp_only_max_correction_rotation_rad = 0.0;
-  double gicp_only_max_jerk_translation_m = 0.0;
-  double gicp_only_max_jerk_rotation_rad = 0.0;
-  double gicp_only_stationary_translation_threshold_m = 0.0;
-  double gicp_only_stationary_rotation_threshold_rad = 0.0;
-  int gicp_only_stationary_streak_required = 3;
-  double gicp_only_ema_alpha_translation = 1.0;
-  double gicp_only_ema_alpha_rotation = 1.0;
 
   // IMU linear_acceleration の単位補正係数。 sensor_msgs/Imu の規約は m/s² だが、
   // Livox driver 等は実際には g 単位で出してくるケースがある (静止時 acc.z ≈ 1.0)。

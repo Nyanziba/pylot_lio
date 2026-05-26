@@ -24,13 +24,6 @@ public:
     double max_correspondence_distance_m = 2.0;
     double huber_threshold = 1.0;
 
-    // OpenMP 並列化用スレッド数。
-    //   <= 0: omp_get_max_threads() に任せる (OpenMP が無効の場合は逐次)
-    //   1   : 逐次実行 (OpenMP 経路を踏まない)
-    //   >=2 : 明示的スレッド数を omp_set_num_threads / num_threads(...) で指定
-    // 小規模点群 (~1000 以下) では並列化オーバヘッドが目立つので 1 〜 2 が無難。
-    int num_threads = 1;
-
     // ============================================================
     // 縮退正則化 (Tuna 2024, "X-ICP: Informed, Constrained, Aligned" 風)
     // 参照: sycl_points::algorithms::registration::DegenerateRegularization
