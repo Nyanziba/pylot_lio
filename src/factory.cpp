@@ -106,6 +106,12 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
     plain_gicp_config.max_iterations = config.registration_max_iterations;
     plain_gicp_config.max_correspondence_distance_m =
       config.registration_max_correspondence_m;
+    plain_gicp_config.convergence_translation_m =
+      config.registration_convergence_translation_m;
+    plain_gicp_config.convergence_rotation_rad =
+      config.registration_convergence_rotation_rad;
+    plain_gicp_config.huber_threshold = config.registration_huber_threshold;
+    plain_gicp_config.num_threads = config.registration_num_threads;
     plain_gicp_config.enable_degenerate_regularization =
       config.enable_degenerate_regularization;
     plain_gicp_config.rotation_eigenvalue_threshold = config.rotation_eigenvalue_threshold;
@@ -137,6 +143,12 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
     fallback_config.max_iterations = config.registration_max_iterations;
     fallback_config.max_correspondence_distance_m =
       config.registration_max_correspondence_m;
+    fallback_config.convergence_translation_m =
+      config.registration_convergence_translation_m;
+    fallback_config.convergence_rotation_rad =
+      config.registration_convergence_rotation_rad;
+    fallback_config.huber_threshold = config.registration_huber_threshold;
+    fallback_config.num_threads = config.registration_num_threads;
     return std::make_unique<PlainGicpRegistration>(fallback_config);
   }
   throw std::invalid_argument(

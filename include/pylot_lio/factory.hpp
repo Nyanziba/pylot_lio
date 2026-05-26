@@ -88,6 +88,12 @@ struct LioBackendConfig
   int registration_num_threads = 4;
   int registration_max_iterations = 30;
 
+  // plain_gicp 固有のチューニング (small_gicp 系では無視される)。
+  // Gauss-Newton の停止条件と Huber ロバスト重みの転換点を ROS パラメータから触れる。
+  double registration_convergence_translation_m = 1e-4;
+  double registration_convergence_rotation_rad = 1e-4;
+  double registration_huber_threshold = 1.0;
+
   // plain_gicp 用: 縮退方向 Tikhonov 正則化 (X-ICP / sycl_points 流)。
   // 廊下や対称的な環境で回転/並進が拘束されないときに姿勢が暴れるのを防ぐ。
   bool enable_degenerate_regularization = false;
