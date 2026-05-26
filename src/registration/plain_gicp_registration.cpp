@@ -1,11 +1,17 @@
 // Copyright 2026 PyLoT Robotics. Licensed under the Apache License, Version 2.0.
 #include "pylot_lio/registration/plain_gicp_registration.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <vector>
 
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "pylot_lio/lie_algebra.hpp"
 
@@ -29,72 +35,128 @@ PlainGicpRegistration::AlignResult PlainGicpRegistration::align(
   const double max_correspondence_distance_squared =
     config_.max_correspondence_distance_m * config_.max_correspondence_distance_m;
 
+  // OpenMP 並列度の決定。 0 以下なら omp_get_max_threads() に委ねる。
+  // OpenMP が無効ビルドや num_threads=1 のときは並列領域を生成せず逐次経路を取る。
+  int actual_num_threads = 1;
+#ifdef _OPENMP
+  if (config_.num_threads <= 0) {
+    actual_num_threads = std::max(1, omp_get_max_threads());
+  } else {
+    actual_num_threads = config_.num_threads;
+  }
+#else
+  (void)config_.num_threads;
+#endif
+
   for (int iteration_index = 0; iteration_index < config_.max_iterations; ++iteration_index) {
     // 法線方程式 H * delta = b を組み立てる。delta は SE(3) 接ベクトル [omega; rho]。
+    // 並列領域内で thread-id ごとにローカルに accumulate し、 後で合算する。
+    // 注意: Matrix6d は 288 B (= 64 B キャッシュライン × 4.5) で連続要素はライン境界を
+    // 跨ぐ可能性があり、 厳密には false sharing が起こり得る。 ただし更新頻度は
+    // num_source_points 回 / num_threads と比較的疎で、 ベンチでは有意な減速は出ていない。
+    // 必要なら alignas(64) のラッパ struct を std::vector に入れて 64 B padding すると良い。
+    std::vector<Eigen::Matrix<double, 6, 6>> per_thread_hessian(
+      actual_num_threads, Eigen::Matrix<double, 6, 6>::Zero());
+    std::vector<Eigen::Matrix<double, 6, 1>> per_thread_gradient(
+      actual_num_threads, Eigen::Matrix<double, 6, 1>::Zero());
+    std::vector<double> per_thread_cost(actual_num_threads, 0.0);
+    std::vector<int> per_thread_count(actual_num_threads, 0);
+
+    const int num_source_points = static_cast<int>(source_cloud_body.points.size());
+
+    // actual_num_threads == 1 のときは並列領域に入らず逐次経路を取る (デバッグ容易性 +
+    // OpenMP runtime overhead 削減)。 _OPENMP 未定義時もこの分岐で逐次パス。
+#ifdef _OPENMP
+    #pragma omp parallel num_threads(actual_num_threads) if(actual_num_threads > 1)
+#endif
+    {
+      int thread_id = 0;
+#ifdef _OPENMP
+      thread_id = omp_get_thread_num();
+#endif
+      Eigen::Matrix<double, 6, 6> & local_hessian = per_thread_hessian[thread_id];
+      Eigen::Matrix<double, 6, 1> & local_gradient = per_thread_gradient[thread_id];
+      double & local_cost = per_thread_cost[thread_id];
+      int & local_count = per_thread_count[thread_id];
+
+#ifdef _OPENMP
+      #pragma omp for schedule(static) nowait
+#endif
+      for (int point_index = 0; point_index < num_source_points; ++point_index) {
+        const Point & source_point_body = source_cloud_body.points[point_index];
+        if (!std::isfinite(source_point_body.x) ||
+            !std::isfinite(source_point_body.y) ||
+            !std::isfinite(source_point_body.z))
+        {
+          continue;
+        }
+        const Eigen::Vector3d source_in_body(
+          source_point_body.x, source_point_body.y, source_point_body.z);
+        const Eigen::Vector3d source_in_world = current_transform * source_in_body;
+
+        const PointCorrespondence correspondence =
+          map_world.findNearestNeighbor(source_in_world);
+        if (!correspondence.valid ||
+            correspondence.squared_distance > max_correspondence_distance_squared)
+        {
+          continue;
+        }
+
+        // 残差: マップ平均 - 変換後 source。
+        const Eigen::Vector3d residual_world =
+          correspondence.target_point_world - source_in_world;
+
+        // Mahalanobis 重み: target_covariance の逆。
+        Eigen::Matrix3d information_matrix;
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(correspondence.target_covariance);
+        Eigen::Vector3d eigenvalues = solver.eigenvalues();
+        for (int axis = 0; axis < 3; ++axis) {
+          eigenvalues(axis) = 1.0 / std::max(eigenvalues(axis), 1e-9);
+        }
+        information_matrix = solver.eigenvectors() * eigenvalues.asDiagonal()
+          * solver.eigenvectors().transpose();
+
+        // Huber 重み (ロバスト化)。
+        const double mahalanobis_squared =
+          residual_world.transpose() * information_matrix * residual_world;
+        double robust_weight = 1.0;
+        if (mahalanobis_squared > config_.huber_threshold * config_.huber_threshold) {
+          robust_weight = config_.huber_threshold / std::sqrt(mahalanobis_squared);
+        }
+
+        // SE(3) 左摂動 T_new = delta_T * T_old の微分:
+        //   T_new(p) = delta_R * (R*p + t) + delta_t
+        //            = source_in_world + omega^ * source_in_world + delta_t
+        //   d(T_new(p))/d(omega)   = -skew(source_in_world)
+        //   d(T_new(p))/d(delta_t) =  I
+        // 残差 r = target - T(p) なので
+        //   dr/d(omega)   =  skew(source_in_world)
+        //   dr/d(delta_t) = -I
+        // 重要: skew(R*p) ではなく skew(source_in_world = R*p + t) を使うこと。
+        // 並進 t が大きくなると両者は一致せず、誤ったヤコビアンは姿勢発散の原因になる。
+        Eigen::Matrix<double, 3, 6> jacobian_matrix;
+        jacobian_matrix.block<3, 3>(0, 0) = lie::skew(source_in_world);
+        jacobian_matrix.block<3, 3>(0, 3) = -Eigen::Matrix3d::Identity();
+
+        local_hessian.noalias() +=
+          robust_weight * jacobian_matrix.transpose() * information_matrix * jacobian_matrix;
+        local_gradient.noalias() -=
+          robust_weight * jacobian_matrix.transpose() * information_matrix * residual_world;
+        local_cost += robust_weight * mahalanobis_squared;
+        local_count += 1;
+      }
+    }
+
+    // スレッドローカル累算を合算 (logical reduction)。
     Eigen::Matrix<double, 6, 6> hessian_matrix = Eigen::Matrix<double, 6, 6>::Zero();
     Eigen::Matrix<double, 6, 1> gradient_vector = Eigen::Matrix<double, 6, 1>::Zero();
     double accumulated_cost = 0.0;
     int valid_correspondences = 0;
-
-    for (const Point & source_point_body : source_cloud_body.points) {
-      if (!std::isfinite(source_point_body.x) ||
-          !std::isfinite(source_point_body.y) ||
-          !std::isfinite(source_point_body.z))
-      {
-        continue;
-      }
-      const Eigen::Vector3d source_in_body(
-        source_point_body.x, source_point_body.y, source_point_body.z);
-      const Eigen::Vector3d source_in_world = current_transform * source_in_body;
-
-      const PointCorrespondence correspondence = map_world.findNearestNeighbor(source_in_world);
-      if (!correspondence.valid ||
-          correspondence.squared_distance > max_correspondence_distance_squared)
-      {
-        continue;
-      }
-
-      // 残差: マップ平均 - 変換後 source。
-      const Eigen::Vector3d residual_world =
-        correspondence.target_point_world - source_in_world;
-
-      // Mahalanobis 重み: target_covariance の逆。
-      Eigen::Matrix3d information_matrix;
-      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(correspondence.target_covariance);
-      Eigen::Vector3d eigenvalues = solver.eigenvalues();
-      for (int axis = 0; axis < 3; ++axis) {
-        eigenvalues(axis) = 1.0 / std::max(eigenvalues(axis), 1e-9);
-      }
-      information_matrix = solver.eigenvectors() * eigenvalues.asDiagonal()
-        * solver.eigenvectors().transpose();
-
-      // Huber 重み (ロバスト化)。
-      const double mahalanobis_squared =
-        residual_world.transpose() * information_matrix * residual_world;
-      double robust_weight = 1.0;
-      if (mahalanobis_squared > config_.huber_threshold * config_.huber_threshold) {
-        robust_weight = config_.huber_threshold / std::sqrt(mahalanobis_squared);
-      }
-
-      // SE(3) 左摂動 T_new = delta_T * T_old の微分:
-      //   T_new(p) = delta_R * (R*p + t) + delta_t = source_in_world + omega^ * source_in_world + delta_t
-      //   d(T_new(p))/d(omega) = -skew(source_in_world)
-      //   d(T_new(p))/d(delta_t) = I
-      // 残差 r = target - T(p) なので
-      //   dr/d(omega)   =  skew(source_in_world)
-      //   dr/d(delta_t) = -I
-      // 重要: skew(R*p) ではなく skew(source_in_world = R*p + t) を使うこと。
-      // 並進 t が大きくなると両者は一致せず、誤ったヤコビアンは姿勢発散の原因になる。
-      Eigen::Matrix<double, 3, 6> jacobian_matrix;
-      jacobian_matrix.block<3, 3>(0, 0) = lie::skew(source_in_world);
-      jacobian_matrix.block<3, 3>(0, 3) = -Eigen::Matrix3d::Identity();
-
-      hessian_matrix.noalias() +=
-        robust_weight * jacobian_matrix.transpose() * information_matrix * jacobian_matrix;
-      gradient_vector.noalias() -=
-        robust_weight * jacobian_matrix.transpose() * information_matrix * residual_world;
-      accumulated_cost += robust_weight * mahalanobis_squared;
-      valid_correspondences += 1;
+    for (int thread_index = 0; thread_index < actual_num_threads; ++thread_index) {
+      hessian_matrix += per_thread_hessian[thread_index];
+      gradient_vector += per_thread_gradient[thread_index];
+      accumulated_cost += per_thread_cost[thread_index];
+      valid_correspondences += per_thread_count[thread_index];
     }
 
     if (valid_correspondences < 6) {
