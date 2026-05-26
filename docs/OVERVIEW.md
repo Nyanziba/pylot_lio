@@ -35,7 +35,7 @@ CMake 側で:
 - `find_package(small_gicp QUIET)` → 成功時のみ `SmallGicpRegistration` をビルド対象に追加 + `PYLOT_LIO_HAS_SMALL_GICP` を define
 - `CMAKE_CXX_COMPILER_ID == IntelLLVM` のときだけ `SyclRegistration` 本体、それ以外は `sycl_registration_stub.cpp`
 
-これで「small_gicp 無し」「SYCL 無し」のどちらでもコアはビルドできます。macOS では `sycl` 指定 → 自動で `plain_gicp` にフォールバック。
+これで「small_gicp 無し」「SYCL 無し」のどちらでもコアはビルドできます。**現状はビルド環境を問わず** `sycl` 指定 → factory が `plain_gicp` にフォールバックします (本来は IntelLLVM + Linux でのみ SYCL 実装が選ばれる設計ですが、現在 SYCL 実装は未配線で、`src/registration/sycl_registration_stub.cpp` がリンクされる)。
 
 ### 1.4 データフロー
 
@@ -51,7 +51,7 @@ CMake 側で:
                           IPointCloudMap::insertScan
                                   ▼
                   /lio/odom (nav_msgs::Odometry)
-                  /lio/cloud_world (10 frames ごと)
+                  /lio/cloud_world (cloud_publish_interval_ = 15 frames ごと)
                   TF: world → base_link
 ```
 
@@ -74,7 +74,7 @@ CMake 側で:
 | `extrinsic_source` | `"config"` ならこの YAML、`"tf"` なら起動時に TF tree から `lookupTransform(imu_frame, lidar_frame)` | config |
 | `voxel_grid_size_m` | 前処理ボクセル一辺 [m] | 0.3 (Mid-360) / 0.4 (Velodyne) |
 | `map_voxel_size_m` | マップボクセル一辺。前処理より大きく取る (代表点が複数入る粒度に) | 0.5 |
-| `map_min_points_per_cell` | この点数を満たさないボクセルは対応点に使わない。**1 にしないと初期数スキャンで対応点ゼロ → マップが原点に積み重なる** | 1〜5 |
+| `map_min_points_per_cell` | この点数を満たさないボクセルは対応点に使わない。`mid360.yaml` 既定は **5** (定常運用で外れ値ボクセルを排除)。`gicp_only_voxel` など IMU 不使用プリセットでは初期数スキャンで対応点ゼロ → マップが原点に積み重なるのを避けるため **1** に下げている | mid360 既定 5 / gicp_only 系 1 |
 | `registration_max_correspondence_m` | source→map 対応の最大許容距離。これより遠い対応は外れ値扱い | 2.0〜3.0 |
 | `enable_degenerate_regularization` | 縮退方向 Tikhonov 正則化 (廊下/対称構造で発散防止) | preset 依存 |
 | `keyframe_min_translation_m` / `keyframe_min_rotation_rad` | keyframe 採択トリガ | 0.5m / 0.1rad 程度 |
@@ -125,7 +125,7 @@ $$
 
 - **`plain_gicp`**: 自前実装。外部依存ゼロ。
 - **`small_gicp_gicp` / `small_gicp_vgicp`**: Koide 実装ラッパ。VGICP はボクセル単位ガウスでマッチ (point-to-distribution)。OpenMP 並列。
-- **`sycl`**: GPU 並列版 (Intel oneAPI、Linux 限定)。
+- **`sycl`**: GPU 並列版 (Intel oneAPI、Linux + IntelLLVM 環境を想定)。**現状は未実装** — `src/registration/sycl_registration_stub.cpp` のスタブがリンクされ、factory は `sycl` 指定時 OS を問わず `plain_gicp` にフォールバックします。
 
 #### 縮退正則化 (X-ICP / Tuna 2024)
 

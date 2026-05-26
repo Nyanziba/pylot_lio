@@ -304,12 +304,14 @@ $\Sigma$ を固有値分解すると、ばらつきの主軸 (固有ベクトル
 
 ### 9.4 サンプルからの計算 (Welford)
 
-$N$ 個の点 $\mathbf{x}_1, \dots, \mathbf{x}_N$ から推定:
+$N$ 個の点 $\mathbf{x}_1, \dots, \mathbf{x}_N$ からサンプル共分散 (**不偏推定**、自由度補正あり) を:
 
 $$
 \boldsymbol{\mu} = \frac{1}{N}\sum \mathbf{x}_i, \qquad
-\Sigma = \frac{1}{N}\sum (\mathbf{x}_i - \boldsymbol{\mu})(\mathbf{x}_i - \boldsymbol{\mu})^T
+\Sigma = \frac{1}{N-1}\sum (\mathbf{x}_i - \boldsymbol{\mu})(\mathbf{x}_i - \boldsymbol{\mu})^T
 $$
+
+> **流儀の違い**: 確率論の教科書では母共分散として $1/N$ を採ることが多く、推定統計では不偏推定として $1/(N-1)$ を採ります。pylot_lio の実装は **$1/(N-1)$ (不偏推定)** で、`src/map/voxel_map.cpp` の `updateCellOnline` がこの式に対応します。
 
 VoxelMap はこれを **Welford のオンライン更新** で 1 点ずつ漸化的に計算します:
 
@@ -321,7 +323,7 @@ $$
 M_{2,n} = M_{2,n-1} + (\mathbf{x}_n - \boldsymbol{\mu}_{n-1})(\mathbf{x}_n - \boldsymbol{\mu}_n)^T
 $$
 
-$\Sigma_n = M_{2,n} / n$。これで全点をメモリに保持せずに済みます。
+$\Sigma_n = M_{2,n} / (n - 1)$ ($n \ge 2$)。これで全点をメモリに保持せずに済みます。
 
 ---
 
