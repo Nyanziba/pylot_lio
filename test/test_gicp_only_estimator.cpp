@@ -38,7 +38,7 @@ TEST(GicpOnlyEstimator, UpdateWithEmptyMapPropagatesIdentity)
   VoxelMap map(VoxelMap::Config{});
   PlainGicpRegistration registration(PlainGicpRegistration::Config{});
   PointCloud empty_cloud;
-  estimator.updateWithScan(empty_cloud, map, registration);
+  estimator.updateWithScan(empty_cloud, map, registration, 0);
   EXPECT_NEAR(estimator.getState().pose_world_body.translation().norm(), 0.0, 1e-9);
 }
 

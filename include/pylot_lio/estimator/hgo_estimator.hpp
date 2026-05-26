@@ -41,7 +41,8 @@ public:
   void updateWithScan(
     const PointCloud & scan_cloud_body,
     IPointCloudMap & map_world,
-    IRegistration & registration) override;
+    IRegistration & registration,
+    int64_t scan_timestamp_ns) override;
 
   RobotState getState() const override;
   EstimatorDiagnostics getDiagnostics() const override;

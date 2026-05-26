@@ -21,6 +21,11 @@ namespace pylot_lio
 //   3) getState() で外に出す
 //
 // IMU を使わない実装 (GICP-only) は predictWithImu を no-op にする。
+//
+// scan_timestamp_ns は対応するスキャンの取得時刻 (ROS の rclcpp::Time::nanoseconds())。
+// IMU を使わない実装 (GICP-only) は連続スキャン間の dt を求めて速度を推定したり
+// 等速度モデルの外挿量を補正するのに使う。 0 が来た場合は dt が不明と解釈し、
+// 速度更新や dt 補正をスキップする。
 class IStateEstimator
 {
 public:
@@ -34,7 +39,8 @@ public:
   virtual void updateWithScan(
     const PointCloud & scan_cloud_body,
     IPointCloudMap & map_world,
-    IRegistration & registration) = 0;
+    IRegistration & registration,
+    int64_t scan_timestamp_ns) = 0;
 
   virtual RobotState getState() const = 0;
   virtual EstimatorDiagnostics getDiagnostics() const = 0;

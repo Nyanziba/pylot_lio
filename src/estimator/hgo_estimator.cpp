@@ -103,7 +103,8 @@ void HgoEstimator::predictWithImu(const ImuSample & imu_sample)
 void HgoEstimator::updateWithScan(
   const PointCloud & scan_cloud_body,
   IPointCloudMap & map_world,
-  IRegistration & registration)
+  IRegistration & registration,
+  int64_t /*scan_timestamp_ns*/)
 {
   if (!initialized_) {
     return;
