@@ -49,6 +49,9 @@ struct LioBackendConfig
 
   // loop closure (Scan Context detection)
   bool enable_loop_detection = true;
+  // keyframe ごとの [loop_diag] 診断ログを出すか。 切り分け時は true、 通常運用や
+  // 高速 bag 処理でログを静かにしたいときは false。
+  bool enable_loop_diag = true;
   int loop_num_rings = 60;
   int loop_num_sectors = 20;
   double loop_max_radius_m = 80.0;
