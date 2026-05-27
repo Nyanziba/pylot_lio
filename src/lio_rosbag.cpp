@@ -14,6 +14,8 @@
 //       -p input_cloud_format:=livox_custom
 //
 // パラメータ (トピック名・形式・preset) は通常の LioNode と同じものを使う。
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -93,12 +95,32 @@ int main(int argc, char ** argv)
 
   std::uint64_t imu_count = 0;
   std::uint64_t cloud_count = 0;
+  std::uint64_t message_count = 0;
+
+  // bag 内の最初/最後のメッセージ時刻 (ナノ秒) から bag の実時間長を推定し、
+  // 処理 wall time と比較して「実時間の何倍速で処理できたか」を出す。
+  std::int64_t first_bag_time_ns = -1;
+  std::int64_t last_bag_time_ns = 0;
+
+  // spin_some を毎メッセージ呼ぶと数十万回のポーリングが支配的になるため間引く。
+  // odom / cloud_world は callback 内 publish() で spin 無しでも送出される。 spin_some は
+  // full-map timer や watchdog を時々回すため (= RViz の全体地図更新) だけに使う。
+  constexpr int kSpinEveryNMessages = 512;
+  // 進捗ログの間隔 (cloud 数)。
+  constexpr int kLogEveryNClouds = 200;
+
+  const auto wall_start = std::chrono::steady_clock::now();
 
   // bag を記録順 (= おおむねタイムスタンプ順、 IMU が先行スキャンより前に来る因果順) に
-  // 読み、 該当トピックを LioNode へ直接投入する。
+  // 読み、 該当トピックを LioNode へ直接投入する。 再生レート制御は一切せず最大速度で回す。
   while (rclcpp::ok() && reader.has_next()) {
     rosbag2_storage::SerializedBagMessageSharedPtr bag_message = reader.read_next();
     const std::string & topic = bag_message->topic_name;
+    const std::int64_t bag_time_ns = bag_message->recv_timestamp;
+    if (first_bag_time_ns < 0) {
+      first_bag_time_ns = bag_time_ns;
+    }
+    last_bag_time_ns = bag_time_ns;
     rclcpp::SerializedMessage serialized(*bag_message->serialized_data);
 
     if (topic == imu_topic) {
@@ -125,18 +147,36 @@ int main(int argc, char ** argv)
         node->injectLidarCloud(cloud_msg);
         ++cloud_count;
       }
+      if (cloud_count % kLogEveryNClouds == 0) {
+        const double elapsed_s =
+          std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - wall_start).count();
+        RCLCPP_INFO(
+          node->get_logger(),
+          "[lio_rosbag] %llu clouds processed (%.1f clouds/s)",
+          static_cast<unsigned long long>(cloud_count),
+          elapsed_s > 0.0 ? cloud_count / elapsed_s : 0.0);
+      }
     }
 
-    // publisher は spin 無しでも送出されるが、 timer (full map など) は回らない。
-    // 出力購読側 (RViz 等) に届けるため、 溜まった処理を軽く吐き出す。
-    rclcpp::spin_some(node);
+    if (++message_count % kSpinEveryNMessages == 0) {
+      rclcpp::spin_some(node);
+    }
   }
+
+  const double wall_s =
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
+  const double bag_s = (first_bag_time_ns >= 0)
+    ? static_cast<double>(last_bag_time_ns - first_bag_time_ns) * 1e-9 : 0.0;
+  const double realtime_factor = (wall_s > 0.0) ? bag_s / wall_s : 0.0;
 
   RCLCPP_INFO(
     node->get_logger(),
-    "[lio_rosbag] done: processed %llu clouds, %llu imu samples.",
+    "[lio_rosbag] done: %llu clouds, %llu imu in %.2f s "
+    "(bag=%.2f s, %.1f clouds/s, %.1fx realtime).",
     static_cast<unsigned long long>(cloud_count),
-    static_cast<unsigned long long>(imu_count));
+    static_cast<unsigned long long>(imu_count),
+    wall_s, bag_s, wall_s > 0.0 ? cloud_count / wall_s : 0.0, realtime_factor);
 
   rclcpp::shutdown();
   return 0;
