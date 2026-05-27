@@ -1,0 +1,45 @@
+# Preset: Apple Metal GPU 上で VGICP を解く registration (metal_vgicp)。
+#
+# glim / gtsam_points の GaussianVoxelMapGPU + VGICP を Metal (metal-cpp) に移植した
+# バックエンド。 各 Gauss-Newton 反復の正規方程式 (H, b) 構築を GPU にオフロードし、
+# 6x6 solve と transform 更新は CPU で行う。
+#
+# 効くケース / 効かないケース (Apple M4 ベンチ、 1 反復線形化):
+#   点数 2万   → GPU 0.79x (起動オーバヘッドで CPU が速い)
+#   点数 10万  → GPU 4.89x
+#   点数 50万  → GPU 10.28x
+# 高密度・大規模スキャン (Velodyne, 高 fps Livox 等) で GPU が大きく勝つ。
+# 小規模 (~2万点以下) の Mid-360 単スキャンでは plain_gicp/small_gicp の方が速いこともある。
+#
+# 重要な制約 (Step2 時点):
+#   - map は必ず "voxel_map" にすること。 metal_vgicp は target を VoxelMap に
+#     dynamic_cast してボクセルガウス分布を GPU へ転送する。 voxel_map 以外を指定すると
+#     align は converged=false を返し続け、 推定が進まない。
+#   - Metal 非対応ビルド (非 Apple, PYLOT_LIO_HAS_METAL 未定義) では factory が
+#     自動的に plain_gicp にフォールバックする (警告を stderr に 1 回出す)。
+#   - fp32 精度 (Apple GPU は fp64 不可)。 omp/tbb (fp64) とビット一致はしない。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.3
+
+    # ★ metal_vgicp は voxel_map 必須 (上記制約参照)。
+    map: "voxel_map"
+    map_voxel_size_m: 0.5
+    map_min_points_per_cell: 1
+
+    registration: "metal_vgicp"
+    registration_max_iterations: 20
+    # VGICP の対応: source 点が属する (近傍) ボクセルのガウス分布を target にする。
+    # max_correspondence は「点とボクセル mean の距離」上限として効く。
+    registration_max_correspondence_m: 2.0
+    # Gauss-Newton 停止条件 (並進 / 回転)。
+    registration_convergence_translation_m: 0.0001
+    registration_convergence_rotation_rad: 0.0001
+    # Huber ロバスト重み (残差 Mahalanobis ノルムの転換点)。 動的物体が多いなら小さめに。
+    registration_huber_threshold: 1.0
+    # source 共分散 (distribution-to-distribution 化)。 近傍 k 点から平面正則化共分散を推定。
+    registration_source_covariance_num_neighbors: 10
+    registration_source_covariance_plane_epsilon: 0.001
+
+    state_estimator: "gicp_only"
