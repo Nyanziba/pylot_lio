@@ -55,4 +55,10 @@ pylot_lio:
     registration_metal_voxelmap_levels: 2
     registration_metal_voxelmap_scaling_factor: 2.0
 
+    # ---- オフライン rosbag リーダ (lio_rosbag) の進捗ログ ----
+    # この cloud 数ごとに「処理レート (clouds/s) と実時間比 (Nx realtime)」を出力する。
+    # 0 で無効。 lio_rosbag.launch.py / ros2 run lio_rosbag のときだけ効く
+    # (ライブ lio_node では無視)。
+    rosbag_progress_log_interval_clouds: 100
+
     state_estimator: "gicp_only"
