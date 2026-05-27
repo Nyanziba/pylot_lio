@@ -94,6 +94,52 @@ TEST(MetalVgicpRegistration, ConvergesToKnownTransform)
   EXPECT_LT(std::abs(error_axis_angle.angle()), 0.02);
 }
 
+TEST(MetalVgicpRegistration, MultiResolutionConvergesFromLargerOffset)
+{
+  // 多重解像度 (粗→細) は単一解像度より広い初期ずれから引き込めるはず。
+  // ここでは「多重解像度設定で、 やや大きめの初期ずれから収束する」ことを確認する
+  // (単一解像度との優劣比較は環境依存になりうるため、 多重解像度の収束性のみ検証)。
+  VoxelMap::Config map_config;
+  map_config.voxel_size_m = 0.3;
+  map_config.min_points_per_cell_for_covariance = 1;
+  VoxelMap map(map_config);
+  const PointCloud target = makeStructuredCloud();
+  map.insertScan(target, Eigen::Isometry3d::Identity());
+
+  // やや大きめの初期ずれ (回転 0.12 rad + 並進 0.2 m)。
+  Eigen::Isometry3d perturbation = Eigen::Isometry3d::Identity();
+  perturbation.linear() =
+    Eigen::AngleAxisd(0.12, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  perturbation.translation() = Eigen::Vector3d(0.2, -0.15, 0.05);
+  PointCloud source;
+  for (const Point & p : target.points) {
+    const Eigen::Vector3d moved = perturbation.inverse() * Eigen::Vector3d(p.x, p.y, p.z);
+    Point sp;
+    sp.x = static_cast<float>(moved.x());
+    sp.y = static_cast<float>(moved.y());
+    sp.z = static_cast<float>(moved.z());
+    source.push_back(sp);
+  }
+
+  MetalVgicpRegistration::Config config;
+  config.max_iterations = 25;
+  config.max_correspondence_distance_m = 1.0;
+  config.gpu_min_points = 0;          // GPU 経路を強制
+  config.voxelmap_levels = 3;         // 粗→細 3 段
+  config.voxelmap_scaling_factor = 2.0;
+  MetalVgicpRegistration registration(config);
+
+  const auto result = registration.align(source, map, Eigen::Isometry3d::Identity());
+  ASSERT_TRUE(result.converged) << "multi-resolution metal_vgicp did not converge";
+  const Eigen::Vector3d translation_error =
+    result.transform_world_body.translation() - perturbation.translation();
+  EXPECT_LT(translation_error.norm(), 0.03);
+  const Eigen::Matrix3d rotation_error =
+    result.transform_world_body.linear() * perturbation.linear().transpose();
+  Eigen::AngleAxisd error_axis_angle(rotation_error);
+  EXPECT_LT(std::abs(error_axis_angle.angle()), 0.03);
+}
+
 TEST(MetalVgicpRegistration, SmallCloudUsesCpuPathAndConverges)
 {
   // 点数が gpu_min_points 未満なら align は GPU を使わず CPU VGICP に切り替える。

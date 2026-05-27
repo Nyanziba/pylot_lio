@@ -47,6 +47,14 @@ public:
     // Apple M4 ベンチの交差点 (~5万〜10万点で GPU が逆転) を踏まえた既定値。
     // 0 にすると常に GPU、 非常に大きくすると常に CPU。
     int gpu_min_points = 50000;
+
+    // 多重解像度 (coarse-to-fine) VGICP。 glim の voxelmap_levels 相当。
+    //   levels=1: 単一解像度 (map の voxel_size のみ)。
+    //   levels>=2: 粗いレベルを scaling_factor 倍ずつ作り、 粗→細で GN を回す。
+    //     粗いレベルは収束盆が広く初期推定が悪くても引き込みやすい。 細いレベルで精度。
+    // 粗レベルのガウス分布は細レベルのセルを平行軸定理でマージして作る。
+    int voxelmap_levels = 2;
+    double voxelmap_scaling_factor = 2.0;
   };
 
   explicit MetalVgicpRegistration(const Config & config);
