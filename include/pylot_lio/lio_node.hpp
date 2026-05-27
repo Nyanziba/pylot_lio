@@ -497,6 +497,11 @@ private:
       declare_parameter<double>("keyframe_min_rotation_rad", 0.2);
     keyframe_max_scans_between_ =
       declare_parameter<int>("keyframe_max_scans_between_keyframes", 50);
+
+    // オフライン rosbag リーダ (lio_rosbag) の進捗ログ間隔 [cloud 数]。
+    // 0 で進捗ログ無効。 ライブ lio_node では使わないが、 preset から設定できるよう
+    // ここで宣言しておく (lio_rosbag が get_parameter で読む)。
+    declare_parameter<int>("rosbag_progress_log_interval_clouds", 200);
   }
 
   void onImu(const sensor_msgs::msg::Imu::SharedPtr message)

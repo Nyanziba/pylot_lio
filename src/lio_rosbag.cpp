@@ -71,6 +71,9 @@ int main(int argc, char ** argv)
   const std::string cloud_topic = node->get_parameter("input_cloud_topic").as_string();
   const std::string imu_topic = node->get_parameter("input_imu_topic").as_string();
   const std::string cloud_format = node->get_parameter("input_cloud_format").as_string();
+  // 進捗ログ間隔 [cloud 数]。 preset / -p で設定可能。 0 で進捗ログ無効。
+  const int progress_interval =
+    static_cast<int>(node->get_parameter("rosbag_progress_log_interval_clouds").as_int());
 
   RCLCPP_INFO(
     node->get_logger(),
@@ -106,8 +109,8 @@ int main(int argc, char ** argv)
   // odom / cloud_world は callback 内 publish() で spin 無しでも送出される。 spin_some は
   // full-map timer や watchdog を時々回すため (= RViz の全体地図更新) だけに使う。
   constexpr int kSpinEveryNMessages = 512;
-  // 進捗ログの間隔 (cloud 数)。
-  constexpr int kLogEveryNClouds = 200;
+  // 進捗ログ間隔 (cloud 数)。 0 以下なら進捗ログ無効。 preset から設定可能。
+  const int log_every_n_clouds = progress_interval;
 
   const auto wall_start = std::chrono::steady_clock::now();
 
@@ -147,15 +150,23 @@ int main(int argc, char ** argv)
         node->injectLidarCloud(cloud_msg);
         ++cloud_count;
       }
-      if (cloud_count % kLogEveryNClouds == 0) {
+      if (log_every_n_clouds > 0 &&
+          cloud_count % static_cast<std::uint64_t>(log_every_n_clouds) == 0)
+      {
         const double elapsed_s =
           std::chrono::duration<double>(
             std::chrono::steady_clock::now() - wall_start).count();
+        // ここまでに処理した bag 区間の実時間長 / wall 経過時間 = 実時間比 (Nx realtime)。
+        const double bag_so_far_s = (first_bag_time_ns >= 0)
+          ? static_cast<double>(bag_time_ns - first_bag_time_ns) * 1e-9 : 0.0;
+        const double realtime_factor_so_far =
+          (elapsed_s > 0.0) ? bag_so_far_s / elapsed_s : 0.0;
         RCLCPP_INFO(
           node->get_logger(),
-          "[lio_rosbag] %llu clouds processed (%.1f clouds/s)",
+          "[lio_rosbag] %llu clouds | %.1f clouds/s | %.1fx realtime",
           static_cast<unsigned long long>(cloud_count),
-          elapsed_s > 0.0 ? cloud_count / elapsed_s : 0.0);
+          elapsed_s > 0.0 ? cloud_count / elapsed_s : 0.0,
+          realtime_factor_so_far);
       }
     }
 
