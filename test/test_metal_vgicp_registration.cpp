@@ -78,6 +78,7 @@ TEST(MetalVgicpRegistration, ConvergesToKnownTransform)
   config.max_iterations = 30;
   config.max_correspondence_distance_m = 1.0;
   config.search_radius_voxels = 1;
+  config.gpu_min_points = 0;  // GPU 経路を強制 (この構造化点群は小さいため)
   MetalVgicpRegistration registration(config);
 
   const auto result = registration.align(source, map, Eigen::Isometry3d::Identity());
@@ -91,6 +92,42 @@ TEST(MetalVgicpRegistration, ConvergesToKnownTransform)
     result.transform_world_body.linear() * perturbation.linear().transpose();
   Eigen::AngleAxisd error_axis_angle(rotation_error);
   EXPECT_LT(std::abs(error_axis_angle.angle()), 0.02);
+}
+
+TEST(MetalVgicpRegistration, SmallCloudUsesCpuPathAndConverges)
+{
+  // 点数が gpu_min_points 未満なら align は GPU を使わず CPU VGICP に切り替える。
+  // それでも収束すること (gpu_used=false でも未収束扱いにしない) を確認する。
+  VoxelMap::Config map_config;
+  map_config.voxel_size_m = 0.3;
+  map_config.min_points_per_cell_for_covariance = 1;
+  VoxelMap map(map_config);
+  const PointCloud target = makeStructuredCloud();
+  map.insertScan(target, Eigen::Isometry3d::Identity());
+
+  Eigen::Isometry3d perturbation = Eigen::Isometry3d::Identity();
+  perturbation.translation() = Eigen::Vector3d(0.06, -0.04, 0.02);
+  PointCloud source;
+  for (const Point & p : target.points) {
+    const Eigen::Vector3d moved = perturbation.inverse() * Eigen::Vector3d(p.x, p.y, p.z);
+    Point sp;
+    sp.x = static_cast<float>(moved.x());
+    sp.y = static_cast<float>(moved.y());
+    sp.z = static_cast<float>(moved.z());
+    source.push_back(sp);
+  }
+
+  MetalVgicpRegistration::Config config;
+  config.max_iterations = 30;
+  config.max_correspondence_distance_m = 1.0;
+  config.gpu_min_points = 1000000;  // 構造化点群は小さいので必ず CPU 経路になる
+  MetalVgicpRegistration registration(config);
+
+  const auto result = registration.align(source, map, Eigen::Isometry3d::Identity());
+  ASSERT_TRUE(result.converged) << "CPU fallback path did not converge";
+  const Eigen::Vector3d translation_error =
+    result.transform_world_body.translation() - perturbation.translation();
+  EXPECT_LT(translation_error.norm(), 0.02);
 }
 
 TEST(MetalVgicpRegistration, NonVoxelMapReturnsNotConverged)

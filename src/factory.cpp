@@ -148,6 +148,7 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
         config.registration_source_covariance_num_neighbors;
       metal_config.source_covariance_plane_epsilon =
         config.registration_source_covariance_plane_epsilon;
+      metal_config.gpu_min_points = config.registration_metal_gpu_min_points;
       return std::make_unique<MetalVgicpRegistration>(metal_config);
     }
     std::fprintf(
