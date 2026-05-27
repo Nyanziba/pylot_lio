@@ -607,7 +607,16 @@ bool MetalVgicpEngine::isValid() const
 
 void MetalVgicpEngine::setTarget(const VgicpVoxelTable & voxel_table)
 {
+  if (!impl_) {
+    return;
+  }
   if (!isValid() || voxel_table.capacity <= 0) {
+    Impl::releaseBuffer(impl_->buf_occupied);
+    Impl::releaseBuffer(impl_->buf_keys);
+    Impl::releaseBuffer(impl_->buf_means);
+    Impl::releaseBuffer(impl_->buf_vcovs);
+    impl_->voxel_size = 0.0f;
+    impl_->capacity = 0;
     return;
   }
   NS::AutoreleasePool * pool = NS::AutoreleasePool::alloc()->init();
