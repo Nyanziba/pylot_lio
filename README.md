@@ -73,8 +73,28 @@ Mid-360 単体では Ground Truth が無いため、評価は「手法間の相�
 - C++17 コンパイラ
 
 任意 (見つからなければ該当バックエンドが無効化される):
-- **small_gicp**: `small_gicp_gicp` / `small_gicp_vgicp` バックエンド用
-- **Intel oneAPI (icpx)**: `sycl` バックエンド用 (Linux のみ)
+- **small_gicp**: `small_gicp_gicp` / `small_gicp_vgicp` バックエンド用。
+  システムインストール (conda-forge / robostack) を `find_package` で優先し、
+  見つからなければ `3rdparty/small_gicp` (submodule, v1.0.0 に pin) を
+  `add_subdirectory` で取り込みます。
+- **Intel oneAPI (icpx)**: `sycl` バックエンド用 (Linux のみ)。
+  検出時は `3rdparty/sycl_points` (submodule, header-only, Apache-2.0) も
+  自動で include path に追加されます。
+
+### 3rdparty submodule の初期化
+
+最初の clone 直後は以下を実行してください:
+
+```bash
+git submodule update --init --recursive
+```
+
+| パス | 用途 | pin |
+|---|---|---|
+| `3rdparty/small_gicp` | VGICP/GICP の実装 (koide3/small_gicp) | tag `v1.0.0` |
+| `3rdparty/sycl_points` | SYCL ベースの点群ユーティリティ (fateshelled/sycl_points, Apache-2.0) | `main` HEAD |
+
+システムに小型 GICP がインストールされている環境では submodule のビルドは走らない (find_package が先に見つけるため)。submodule は **オフラインビルド / システムインストール不能環境** のためのフォールバックです。
 
 macOS arm64 + pixi (robostack) 環境では `activate_pixi_env.sh` の手順を踏まないと Apple Clang が選ばれてビルドが落ちます。詳しくは workspace ルートの [`CLAUDE.md`](../../CLAUDE.md) を参照してください。
 
