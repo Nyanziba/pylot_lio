@@ -75,6 +75,10 @@ public:
   // テスト用に内部統計へアクセスするための補助 (read-only)。
   const std::unordered_map<VoxelKey, GaussianCell, VoxelKeyHash> & cells() const;
 
+  // voxel_size / covariance_eigen_floor 等を read-only で参照する (GPU VGICP の
+  // voxel 表構築や、 外部から map のボクセル幾何を知りたい用途)。
+  const Config & config() const { return config_; }
+
 private:
   VoxelKey computeKey(const Eigen::Vector3d & position_world) const;
 

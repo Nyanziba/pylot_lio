@@ -120,6 +120,7 @@ set(PYLOT_LIO_CORE_SOURCES
   src/map/voxel_random_map.cpp
   src/map/voxel_keyframe_submap_map.cpp
   src/registration/plain_gicp_registration.cpp
+  src/registration/metal_vgicp_registration.cpp
   src/estimator/ieskf_estimator.cpp
   src/estimator/hgo_estimator.cpp
   src/estimator/gicp_only_estimator.cpp
@@ -327,6 +328,7 @@ if(BUILD_TESTING)
     test_livox_conversion
     test_metal_compute_probe
     test_metal_vgicp_linearizer
+    test_metal_vgicp_registration
   )
 
   foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)
