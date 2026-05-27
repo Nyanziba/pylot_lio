@@ -27,6 +27,7 @@ find_package(pcl_ros REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io filters kdtree)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP QUIET)
+find_package(TBB QUIET)
 find_package(small_gicp QUIET)
 find_package(GTSAM QUIET)
 find_package(livox_ros_driver2 QUIET)
@@ -142,6 +143,19 @@ target_link_libraries(pylot_lio_core ${PCL_LIBRARIES})
 
 if(OpenMP_CXX_FOUND)
   target_link_libraries(pylot_lio_core OpenMP::OpenMP_CXX)
+endif()
+
+# ============================================================
+# Optional parallel backend: Intel TBB (oneTBB)
+# 見つかれば PlainGicp / SmallGicp の "tbb" バックエンドが有効になる。
+# 無い環境では PYLOT_LIO_HAS_TBB が未定義のまま OpenMP/逐次へフォールバックする。
+# ============================================================
+if(TBB_FOUND)
+  target_link_libraries(pylot_lio_core TBB::tbb)
+  target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_TBB=1)
+  message(STATUS "TBB found; 'tbb' parallel backend enabled.")
+else()
+  message(STATUS "TBB not found; 'tbb' backend disabled (falls back to OpenMP).")
 endif()
 
 # ============================================================

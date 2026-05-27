@@ -24,6 +24,9 @@ pylot_lio:
     registration: "plain_gicp"
     registration_max_iterations: 20
     registration_max_correspondence_m: 2.0
+    # 並列バックエンド: "omp" (OpenMP) | "tbb" (Intel TBB)。
+    # TBB と公平比較するときは plain_gicp_tbb.yaml を使う (この値だけ "tbb" に変えた構成)。
+    registration_parallel_backend: "omp"
     # OpenMP 並列度。 物理コア数を上限とすること。
     registration_num_threads: 4
     # Gauss-Newton 停止条件 (並進 / 回転)。 厳しくすると反復回数増、 緩めると早く打ち切る。
