@@ -107,6 +107,10 @@ struct LioBackendConfig
   // (GPU 起動オーバヘッド回避)。 0 で常に GPU。 他の registration では無視される。
   int registration_metal_gpu_min_points = 50000;
 
+  // metal_vgicp 用: 多重解像度 (coarse-to-fine) VGICP。 levels=1 で単一解像度。
+  int registration_metal_voxelmap_levels = 2;
+  double registration_metal_voxelmap_scaling_factor = 2.0;
+
   // plain_gicp 用: 縮退方向 Tikhonov 正則化 (X-ICP / sycl_points 流)。
   // 廊下や対称的な環境で回転/並進が拘束されないときに姿勢が暴れるのを防ぐ。
   bool enable_degenerate_regularization = false;

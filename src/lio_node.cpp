@@ -359,6 +359,14 @@ private:
       declare_parameter<int>(
         "registration_metal_gpu_min_points",
         backend_config_.registration_metal_gpu_min_points);
+    backend_config_.registration_metal_voxelmap_levels =
+      declare_parameter<int>(
+        "registration_metal_voxelmap_levels",
+        backend_config_.registration_metal_voxelmap_levels);
+    backend_config_.registration_metal_voxelmap_scaling_factor =
+      declare_parameter<double>(
+        "registration_metal_voxelmap_scaling_factor",
+        backend_config_.registration_metal_voxelmap_scaling_factor);
     backend_config_.enable_degenerate_regularization =
       declare_parameter<bool>(
         "enable_degenerate_regularization",
