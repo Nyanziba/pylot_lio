@@ -159,6 +159,35 @@ else()
 endif()
 
 # ============================================================
+# Optional GPU backend: Apple Metal (metal-cpp)
+# macOS でのみ有効。 metal-cpp は 3rdparty/metal-cpp に vendor 済みの
+# ヘッダオンリー配布 (Apache-2.0)。 Metal/Foundation フレームワークをリンクし、
+# PYLOT_LIO_HAS_METAL を定義する。 まずは saxpy プローブ (土台検証) のみ。
+# 非 Apple ビルドでは metal_compute_probe.cpp はスタブとしてビルドされる。
+# ============================================================
+set(PYLOT_LIO_METALCPP_INCLUDE
+    "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/metal-cpp")
+target_sources(pylot_lio_core PRIVATE src/gpu/metal_compute_probe.cpp)
+if(APPLE AND IS_DIRECTORY "${PYLOT_LIO_METALCPP_INCLUDE}/Metal")
+  find_library(METAL_FRAMEWORK Metal)
+  find_library(FOUNDATION_FRAMEWORK Foundation)
+  if(METAL_FRAMEWORK AND FOUNDATION_FRAMEWORK)
+    target_include_directories(pylot_lio_core PRIVATE "${PYLOT_LIO_METALCPP_INCLUDE}")
+    target_link_libraries(pylot_lio_core ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+    target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_METAL=1)
+    # metal-cpp は anonymous struct (GNU 拡張) を使うため、 この TU だけ警告を抑制する
+    # (-Wall -Wextra -Wpedantic 下で -Werror 化しても落ちないように)。
+    set_source_files_properties(src/gpu/metal_compute_probe.cpp PROPERTIES
+      COMPILE_OPTIONS "-Wno-gnu-anonymous-struct;-Wno-nested-anon-types")
+    message(STATUS "Metal found; 'metal' GPU backend probe enabled (metal-cpp).")
+  else()
+    message(STATUS "Metal/Foundation frameworks not found; Metal probe builds as stub.")
+  endif()
+else()
+  message(STATUS "Not Apple or metal-cpp absent; Metal probe builds as stub.")
+endif()
+
+# ============================================================
 # Optional backend: small_gicp registration
 # ============================================================
 if(small_gicp_FOUND)
@@ -290,6 +319,7 @@ if(BUILD_TESTING)
     test_scan_context
     test_pose_graph_optimizer
     test_livox_conversion
+    test_metal_compute_probe
   )
 
   foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)
