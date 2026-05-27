@@ -53,6 +53,13 @@ struct VgicpLinearizeConfig
 {
   float huber_threshold = 1.0f;
   float max_correspondence_distance_m = 2.0f;
+
+  // 近傍ボクセル探索半径 (ボクセル単位)。
+  //   0: source 点が属する 1 ボクセルだけを引く (最速)
+  //   1: 3x3x3 = 27 近傍を走査し、 mean が最も近い有効ボクセルを target にする
+  // 境界付近の点は floor で決まる自ボクセルが空 / 隣の分布の方が近いことがあるため、
+  // 1 にすると対応の脱落・誤対応が減る (glim の VGICP に近い挙動)。 CPU/GPU 同一。
+  int search_radius_voxels = 1;
 };
 
 // 1 反復ぶんの線形化結果。 GPU の fp32 部分和を CPU で合算して double で保持する。
