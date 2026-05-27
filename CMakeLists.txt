@@ -31,6 +31,8 @@ find_package(TBB QUIET)
 find_package(small_gicp QUIET)
 find_package(GTSAM QUIET)
 find_package(livox_ros_driver2 QUIET)
+# オフライン rosbag リーダ (lio_rosbag) 用。 見つからなければ lio_rosbag をビルドしない。
+find_package(rosbag2_cpp QUIET)
 
 # ------------------------------------------------------------
 # 3rdparty fallback: small_gicp が見つからない場合は in-tree の
@@ -271,6 +273,24 @@ endif()
 target_link_libraries(lio_node pylot_lio_core)
 
 # ============================================================
+# lio_rosbag executable (offline rosbag reader, GLIM glim_rosbag 相当)
+# rosbag2_cpp が見つかる環境でのみビルドする。
+# ============================================================
+if(rosbag2_cpp_FOUND)
+  add_executable(lio_rosbag src/lio_rosbag.cpp)
+  if(livox_ros_driver2_FOUND)
+    ament_target_dependencies(lio_rosbag
+      ${COMMON_ROS_DEPENDENCIES} rosbag2_cpp livox_ros_driver2)
+  else()
+    ament_target_dependencies(lio_rosbag ${COMMON_ROS_DEPENDENCIES} rosbag2_cpp)
+  endif()
+  target_link_libraries(lio_rosbag pylot_lio_core)
+  message(STATUS "rosbag2_cpp found; building offline reader 'lio_rosbag'.")
+else()
+  message(STATUS "rosbag2_cpp not found; offline reader 'lio_rosbag' disabled.")
+endif()
+
+# ============================================================
 # Install
 # ============================================================
 install(TARGETS pylot_lio_core
@@ -282,6 +302,12 @@ install(TARGETS pylot_lio_core
 install(TARGETS lio_node
   DESTINATION lib/${PROJECT_NAME}
 )
+
+if(rosbag2_cpp_FOUND)
+  install(TARGETS lio_rosbag
+    DESTINATION lib/${PROJECT_NAME}
+  )
+endif()
 
 install(DIRECTORY include/
   DESTINATION include
