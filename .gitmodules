@@ -1,0 +1,6 @@
+[submodule "3rdparty/small_gicp"]
+	path = 3rdparty/small_gicp
+	url = https://github.com/koide3/small_gicp.git
+[submodule "3rdparty/sycl_points"]
+	path = 3rdparty/sycl_points
+	url = https://github.com/fateshelled/sycl_points.git
