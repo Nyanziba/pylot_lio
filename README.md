@@ -64,6 +64,7 @@ Mid-360 単体では Ground Truth が無いため、評価は「手法間の相�
 |----------|------|
 | [docs/ALGORITHMS.md](docs/ALGORITHMS.md) | **線形代数を知らない人向け** のアルゴリズム解説。LIO 全体像、4 レイヤーの役割、各手法の長所短所を日常語で説明 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 抽象インタフェース + Factory パターンの設計意図、データフロー、CMake 構造、拡張ポイント |
+| [docs/PARALLEL_BACKENDS.md](docs/PARALLEL_BACKENDS.md) | registration の並列バックエンド (OpenMP / Intel TBB) の切替方法・実装・実 bag での性能比較 (計測環境含む) |
 
 ## ビルド要件
 

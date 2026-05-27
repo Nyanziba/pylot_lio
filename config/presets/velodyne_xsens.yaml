@@ -36,7 +36,7 @@ pylot_lio:
     submap_cell_sampling_mode: "random_one"
     submap_random_seed: 12345
 
-    registration: "small_gicp_gicp"
+    registration: "plain_gicp"
     registration_max_iterations: 20
     registration_max_correspondence_m: 2.0
     # OpenMP 並列度。 物理コア数を上限とすること。
@@ -44,6 +44,7 @@ pylot_lio:
     # omp_get_max_threads() に委ねる)。 small_gicp_* ラッパは値をそのまま
     # small_gicp::RegistrationPCL::setNumThreads() に渡すため、 ここでは正の整数を指定する。
     registration_num_threads: 4
+    registration_parallel_backend: "omp"
     # Gauss-Newton 停止条件 (並進 / 回転)。 厳しくすると反復回数増、 緩めると早く打ち切る。
     # plain_gicp 固有 (small_gicp バリアントでは無視される)。
     registration_convergence_translation_m: 0.0001
@@ -159,15 +160,15 @@ pylot_lio:
     loop_num_sectors: 20
     loop_max_radius_m: 100.0
     loop_min_radius_m: 0.5
-    loop_score_threshold: 0.20
+    loop_score_threshold: 0.10
     loop_exclude_recent_kf: 20
     loop_ring_key_top_k: 20
 
     # Loop ICP のゲート (Mid-360 と同値で十分動く)。
-    loop_icp_voxel_size_m: 0.7
+    loop_icp_voxel_size_m: 0.3
     loop_icp_max_correspondence_m: 5.0
     loop_icp_max_fitness_score: 10.0
-    loop_icp_max_translation_jump_m: 50.0
+    loop_icp_max_translation_jump_m: 10.0
     loop_match_cooldown_keyframes: 0
 
     # PGO は有効。 IESKF の odometry 品質に応じて sigma を調整する。
