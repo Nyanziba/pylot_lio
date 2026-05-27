@@ -30,6 +30,10 @@
   <build_depend>small_gicp</build_depend>
   <exec_depend>small_gicp</exec_depend>
 
+  <!-- オフライン rosbag リーダ (lio_rosbag) 用。 無い環境では CMake の
+       find_package(QUIET) で lio_rosbag ビルドがスキップされる。 -->
+  <depend>rosbag2_cpp</depend>
+
   <!-- Livox CustomMsg (input_cloud_format='livox_custom') 用。 macOS で
        livox_ros_driver2 がビルド不可な環境では CMake 側の find_package(QUIET)
        でフォールバックされる (CustomMsg 経路は無効化されるが PointCloud2 経路は動く)。 -->
