@@ -2,8 +2,10 @@
 #ifndef PYLOT_LIO__REGISTRATION__METAL_VGICP_REGISTRATION_HPP_
 #define PYLOT_LIO__REGISTRATION__METAL_VGICP_REGISTRATION_HPP_
 
+#include <memory>
 #include <string>
 
+#include "pylot_lio/gpu/metal_vgicp_linearizer.hpp"
 #include "pylot_lio/registration/i_registration.hpp"
 
 namespace pylot_lio
@@ -56,6 +58,10 @@ public:
 
 private:
   Config config_;
+  // GPU リソース (device/PSO) を align 間で使い回すための永続エンジン。
+  // PSO コンパイル (~100ms) を毎 align で繰り返さないよう、 registration インスタンスが
+  // 1 つ保持する。 Metal 無効ビルドでは isValid()=false のスタブ。
+  std::shared_ptr<gpu::MetalVgicpEngine> engine_;
 };
 
 }  // namespace pylot_lio
