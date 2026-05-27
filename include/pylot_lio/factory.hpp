@@ -103,6 +103,10 @@ struct LioBackendConfig
   int registration_source_covariance_num_neighbors = 10;
   double registration_source_covariance_plane_epsilon = 1e-3;
 
+  // metal_vgicp 用: GPU を使う最小 source 点数。 これ未満は CPU VGICP に自動切替
+  // (GPU 起動オーバヘッド回避)。 0 で常に GPU。 他の registration では無視される。
+  int registration_metal_gpu_min_points = 50000;
+
   // plain_gicp 用: 縮退方向 Tikhonov 正則化 (X-ICP / sycl_points 流)。
   // 廊下や対称的な環境で回転/並進が拘束されないときに姿勢が暴れるのを防ぐ。
   bool enable_degenerate_regularization = false;

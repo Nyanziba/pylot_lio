@@ -355,6 +355,10 @@ private:
       declare_parameter<double>(
         "registration_source_covariance_plane_epsilon",
         backend_config_.registration_source_covariance_plane_epsilon);
+    backend_config_.registration_metal_gpu_min_points =
+      declare_parameter<int>(
+        "registration_metal_gpu_min_points",
+        backend_config_.registration_metal_gpu_min_points);
     backend_config_.enable_degenerate_regularization =
       declare_parameter<bool>(
         "enable_degenerate_regularization",

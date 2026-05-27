@@ -180,14 +180,25 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
     return result;
   }
 
-  // 永続エンジンが無効 (Metal 無し) なら未収束で返す (factory がフォールバック)。
+  // engine 無効 (Metal 無しビルド / デバイス無) なら未収束で返す。 これは factory が
+  // plain_gicp へフォールバックする領域 (metal_vgicp はそもそも使われない想定)。
   if (!engine_ || !engine_->isValid()) {
     result.converged = false;
     return result;
   }
-  // target/source は align で 1 回だけアップロード。 反復では transform だけ更新する。
-  engine_->setTarget(voxel_table);
-  engine_->setSource(source_points, source_covariances);
+
+  // backend を align ごとに事前選択する (engine は有効):
+  //   - 点数 >= gpu_min_points → GPU (大規模で GPU が勝つ)
+  //   - それ未満 → CPU VGICP (起動オーバヘッドで GPU が不利な小規模)
+  // CPU を意図的に選んだ場合は gpu_used=false が正常なので、 失敗扱いしない。
+  const bool use_gpu =
+    static_cast<int>(source_points.size()) >= config_.gpu_min_points;
+
+  if (use_gpu) {
+    // target/source は align で 1 回だけアップロード。 反復では transform だけ更新する。
+    engine_->setTarget(voxel_table);
+    engine_->setSource(source_points, source_covariances);
+  }
 
   gpu::VgicpLinearizeConfig lin_config;
   lin_config.huber_threshold = static_cast<float>(config_.huber_threshold);
@@ -197,11 +208,14 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
 
   Eigen::Isometry3d current = initial_transform_world_body;
   for (int iteration = 0; iteration < config_.max_iterations; ++iteration) {
-    const gpu::VgicpLinearization lin = engine_->linearize(current, lin_config);
+    const gpu::VgicpLinearization lin = use_gpu
+      ? engine_->linearize(current, lin_config)
+      : gpu::linearizeVgicpCpu(
+          source_points, source_covariances, voxel_table, current, lin_config);
 
-    if (!lin.gpu_used) {
-      // Metal が使えなかった (非対応ビルド / デバイス無)。 factory がフォールバック
-      // するので、 ここでは未収束として返す。
+    // GPU を選んだのに gpu_used=false なら GPU 実行が失敗した (想定外)。 未収束で返し
+    // factory フォールバックに委ねる。 CPU 選択時は gpu_used=false が正常なのでスキップ。
+    if (use_gpu && !lin.gpu_used) {
       result.converged = false;
       result.transform_world_body = current;
       return result;

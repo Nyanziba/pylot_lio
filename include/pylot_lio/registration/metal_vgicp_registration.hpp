@@ -41,6 +41,12 @@ public:
 
     // 近傍ボクセル探索半径 (0=自ボクセルのみ, 1=27 近傍)。
     int search_radius_voxels = 1;
+
+    // GPU を使う最小 source 点数。 これ未満は GPU 起動オーバヘッドが支配的になり
+    // CPU VGICP の方が速いため、 align 内で自動的に CPU 経路に切り替える。
+    // Apple M4 ベンチの交差点 (~5万〜10万点で GPU が逆転) を踏まえた既定値。
+    // 0 にすると常に GPU、 非常に大きくすると常に CPU。
+    int gpu_min_points = 50000;
   };
 
   explicit MetalVgicpRegistration(const Config & config);
