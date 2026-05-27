@@ -2,8 +2,10 @@
 #ifndef PYLOT_LIO__REGISTRATION__METAL_VGICP_REGISTRATION_HPP_
 #define PYLOT_LIO__REGISTRATION__METAL_VGICP_REGISTRATION_HPP_
 
+#include <memory>
 #include <string>
 
+#include "pylot_lio/gpu/metal_vgicp_linearizer.hpp"
 #include "pylot_lio/registration/i_registration.hpp"
 
 namespace pylot_lio
@@ -39,6 +41,20 @@ public:
 
     // 近傍ボクセル探索半径 (0=自ボクセルのみ, 1=27 近傍)。
     int search_radius_voxels = 1;
+
+    // GPU を使う最小 source 点数。 これ未満は GPU 起動オーバヘッドが支配的になり
+    // CPU VGICP の方が速いため、 align 内で自動的に CPU 経路に切り替える。
+    // Apple M4 ベンチの交差点 (~5万〜10万点で GPU が逆転) を踏まえた既定値。
+    // 0 にすると常に GPU、 非常に大きくすると常に CPU。
+    int gpu_min_points = 50000;
+
+    // 多重解像度 (coarse-to-fine) VGICP。 glim の voxelmap_levels 相当。
+    //   levels=1: 単一解像度 (map の voxel_size のみ)。
+    //   levels>=2: 粗いレベルを scaling_factor 倍ずつ作り、 粗→細で GN を回す。
+    //     粗いレベルは収束盆が広く初期推定が悪くても引き込みやすい。 細いレベルで精度。
+    // 粗レベルのガウス分布は細レベルのセルを平行軸定理でマージして作る。
+    int voxelmap_levels = 2;
+    double voxelmap_scaling_factor = 2.0;
   };
 
   explicit MetalVgicpRegistration(const Config & config);
@@ -56,6 +72,10 @@ public:
 
 private:
   Config config_;
+  // GPU リソース (device/PSO) を align 間で使い回すための永続エンジン。
+  // PSO コンパイル (~100ms) を毎 align で繰り返さないよう、 registration インスタンスが
+  // 1 つ保持する。 Metal 無効ビルドでは isValid()=false のスタブ。
+  std::shared_ptr<gpu::MetalVgicpEngine> engine_;
 };
 
 }  // namespace pylot_lio

@@ -49,6 +49,9 @@ struct LioBackendConfig
 
   // loop closure (Scan Context detection)
   bool enable_loop_detection = true;
+  // keyframe ごとの [loop_diag] 診断ログを出すか。 切り分け時は true、 通常運用や
+  // 高速 bag 処理でログを静かにしたいときは false。
+  bool enable_loop_diag = true;
   int loop_num_rings = 60;
   int loop_num_sectors = 20;
   double loop_max_radius_m = 80.0;
@@ -102,6 +105,14 @@ struct LioBackendConfig
   // 近傍点数 k と平面性正則化の最小固有値 epsilon。 small_gicp 系では無視される。
   int registration_source_covariance_num_neighbors = 10;
   double registration_source_covariance_plane_epsilon = 1e-3;
+
+  // metal_vgicp 用: GPU を使う最小 source 点数。 これ未満は CPU VGICP に自動切替
+  // (GPU 起動オーバヘッド回避)。 0 で常に GPU。 他の registration では無視される。
+  int registration_metal_gpu_min_points = 50000;
+
+  // metal_vgicp 用: 多重解像度 (coarse-to-fine) VGICP。 levels=1 で単一解像度。
+  int registration_metal_voxelmap_levels = 2;
+  double registration_metal_voxelmap_scaling_factor = 2.0;
 
   // plain_gicp 用: 縮退方向 Tikhonov 正則化 (X-ICP / sycl_points 流)。
   // 廊下や対称的な環境で回転/並進が拘束されないときに姿勢が暴れるのを防ぐ。
