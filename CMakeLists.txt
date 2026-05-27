@@ -167,7 +167,10 @@ endif()
 # ============================================================
 set(PYLOT_LIO_METALCPP_INCLUDE
     "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/metal-cpp")
-target_sources(pylot_lio_core PRIVATE src/gpu/metal_compute_probe.cpp)
+target_sources(pylot_lio_core PRIVATE
+  src/gpu/metal_compute_probe.cpp
+  src/gpu/metal_vgicp_linearizer.cpp
+)
 if(APPLE AND IS_DIRECTORY "${PYLOT_LIO_METALCPP_INCLUDE}/Metal")
   find_library(METAL_FRAMEWORK Metal)
   find_library(FOUNDATION_FRAMEWORK Foundation)
@@ -175,9 +178,12 @@ if(APPLE AND IS_DIRECTORY "${PYLOT_LIO_METALCPP_INCLUDE}/Metal")
     target_include_directories(pylot_lio_core PRIVATE "${PYLOT_LIO_METALCPP_INCLUDE}")
     target_link_libraries(pylot_lio_core ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
     target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_METAL=1)
-    # metal-cpp は anonymous struct (GNU 拡張) を使うため、 この TU だけ警告を抑制する
-    # (-Wall -Wextra -Wpedantic 下で -Werror 化しても落ちないように)。
-    set_source_files_properties(src/gpu/metal_compute_probe.cpp PROPERTIES
+    # metal-cpp は anonymous struct (GNU 拡張) を使うため、 metal-cpp を含む TU だけ
+    # 警告を抑制する (-Wall -Wextra -Wpedantic 下で -Werror 化しても落ちないように)。
+    set_source_files_properties(
+      src/gpu/metal_compute_probe.cpp
+      src/gpu/metal_vgicp_linearizer.cpp
+      PROPERTIES
       COMPILE_OPTIONS "-Wno-gnu-anonymous-struct;-Wno-nested-anon-types")
     message(STATUS "Metal found; 'metal' GPU backend probe enabled (metal-cpp).")
   else()
@@ -320,6 +326,7 @@ if(BUILD_TESTING)
     test_pose_graph_optimizer
     test_livox_conversion
     test_metal_compute_probe
+    test_metal_vgicp_linearizer
   )
 
   foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)
