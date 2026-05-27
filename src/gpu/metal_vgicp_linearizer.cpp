@@ -152,43 +152,56 @@ VgicpLinearization linearizeVgicpCpu(
     }
     const Eigen::Vector3d source_world = transform_world_body * source_body;
 
-    // ボクセル座標 → ハッシュ → 線形プロービングで一致 key を探す (空きで打ち切り)。
-    const Eigen::Vector3i coord = voxelCoord(source_world, voxel_size);
-    std::uint32_t slot = hashVoxel(coord.x(), coord.y(), coord.z(), voxel_table.capacity);
-    bool found = false;
+    // 近傍 (2*radius+1)^3 ボクセルを走査し、 mean が最も近い有効ボクセルを target にする。
+    // 各近傍について: ハッシュ → 線形プロービングで一致 key を探す (空きで打ち切り)。
+    const Eigen::Vector3i center = voxelCoord(source_world, voxel_size);
     const std::uint32_t mask = static_cast<std::uint32_t>(voxel_table.capacity - 1);
-    for (int probe = 0; probe < voxel_table.capacity; ++probe) {
-      if (voxel_table.occupied[slot] == 0) {
-        break;  // 空きスロット = この voxel は未登録 → 対応なし
+    const int radius = config.search_radius_voxels;
+    bool found = false;
+    double best_distance_sq = max_corr_sq;
+    Eigen::Vector3d target_mean = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d target_cov = Eigen::Matrix3d::Identity();
+
+    for (int dz = -radius; dz <= radius; ++dz) {
+      for (int dy = -radius; dy <= radius; ++dy) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+          const Eigen::Vector3i coord(center.x() + dx, center.y() + dy, center.z() + dz);
+          std::uint32_t slot = hashVoxel(coord.x(), coord.y(), coord.z(), voxel_table.capacity);
+          for (int probe = 0; probe < voxel_table.capacity; ++probe) {
+            if (voxel_table.occupied[slot] == 0) {
+              break;  // 空きスロット = この voxel は未登録
+            }
+            if (voxel_table.voxel_keys_xyz[slot * 3 + 0] == coord.x() &&
+                voxel_table.voxel_keys_xyz[slot * 3 + 1] == coord.y() &&
+                voxel_table.voxel_keys_xyz[slot * 3 + 2] == coord.z())
+            {
+              const Eigen::Vector3d candidate_mean(
+                voxel_table.means_xyz[slot * 3 + 0],
+                voxel_table.means_xyz[slot * 3 + 1],
+                voxel_table.means_xyz[slot * 3 + 2]);
+              const double distance_sq = (candidate_mean - source_world).squaredNorm();
+              if (distance_sq < best_distance_sq) {
+                best_distance_sq = distance_sq;
+                target_mean = candidate_mean;
+                for (int r = 0; r < 3; ++r) {
+                  for (int c = 0; c < 3; ++c) {
+                    target_cov(r, c) = voxel_table.covariances[slot * 9 + r * 3 + c];
+                  }
+                }
+                found = true;
+              }
+              break;  // この近傍 voxel は見つけた (key 一致) ので probe 終了
+            }
+            slot = (slot + 1) & mask;
+          }
+        }
       }
-      if (voxel_table.voxel_keys_xyz[slot * 3 + 0] == coord.x() &&
-          voxel_table.voxel_keys_xyz[slot * 3 + 1] == coord.y() &&
-          voxel_table.voxel_keys_xyz[slot * 3 + 2] == coord.z())
-      {
-        found = true;
-        break;
-      }
-      slot = (slot + 1) & mask;
     }
     if (!found) {
       continue;
     }
-
-    const Eigen::Vector3d target_mean(
-      voxel_table.means_xyz[slot * 3 + 0],
-      voxel_table.means_xyz[slot * 3 + 1],
-      voxel_table.means_xyz[slot * 3 + 2]);
-    Eigen::Matrix3d target_cov;
-    for (int r = 0; r < 3; ++r) {
-      for (int c = 0; c < 3; ++c) {
-        target_cov(r, c) = voxel_table.covariances[slot * 9 + r * 3 + c];
-      }
-    }
-
+    // best_distance_sq は探索時に max_corr_sq 未満であることを既に保証済み。
     const Eigen::Vector3d residual = target_mean - source_world;
-    if (residual.squaredNorm() > max_corr_sq) {
-      continue;
-    }
 
     const Eigen::Matrix3d source_cov_world =
       rotation * source_covariances_body[point_index] * rotation.transpose();
@@ -249,6 +262,8 @@ struct VgicpKernelParams
   float max_corr_sq;
   std::uint32_t capacity;
   std::uint32_t num_points;
+  std::int32_t search_radius;  // 近傍探索半径 (ボクセル単位、 0=自ボクセルのみ)
+  std::int32_t padding;        // 16 byte 境界揃え (Metal constant の安全側)
 };
 
 // 1 threadgroup = 128 スレッド固定。 部分和は 29 float / threadgroup。
@@ -272,6 +287,8 @@ struct VgicpKernelParams {
   float max_corr_sq;
   uint  capacity;
   uint  num_points;
+  int   search_radius;
+  int   padding;
 };
 
 inline uint hash_voxel(int x, int y, int z, uint capacity) {
@@ -328,6 +345,9 @@ kernel void vgicp_linearize(
       source_points[global_id * 3 + 1],
       source_points[global_id * 3 + 2]);
 
+    // 非有限 (NaN/Inf) の source 点は寄与ゼロでスキップ (CPU 参照の allFinite と同じ)。
+    if (isfinite(p_body.x) && isfinite(p_body.y) && isfinite(p_body.z)) {
+
     // R (row-major) を float3x3 (col-major) に: Rc[col][row] = rotation[row*3+col]
     float3x3 R;
     for (int row = 0; row < 3; ++row) {
@@ -338,29 +358,50 @@ kernel void vgicp_linearize(
     float3 t = float3(params.translation[0], params.translation[1], params.translation[2]);
     float3 p_world = R * p_body + t;
 
-    int vx = int(floor(p_world.x * params.inv_voxel_size));
-    int vy = int(floor(p_world.y * params.inv_voxel_size));
-    int vz = int(floor(p_world.z * params.inv_voxel_size));
+    int cx = int(floor(p_world.x * params.inv_voxel_size));
+    int cy = int(floor(p_world.y * params.inv_voxel_size));
+    int cz = int(floor(p_world.z * params.inv_voxel_size));
 
-    uint slot = hash_voxel(vx, vy, vz, params.capacity);
     uint mask = params.capacity - 1u;
+    int radius = params.search_radius;
     bool found = false;
-    for (uint probe = 0; probe < params.capacity; ++probe) {
-      if (voxel_occupied[slot] == 0) { break; }
-      if (voxel_keys[slot * 3 + 0] == vx &&
-          voxel_keys[slot * 3 + 1] == vy &&
-          voxel_keys[slot * 3 + 2] == vz) {
-        found = true;
-        break;
+    float best_dist_sq = params.max_corr_sq;
+    uint best_slot = 0u;
+
+    // 近傍 (2*radius+1)^3 ボクセルを走査し、 mean が最も近い有効ボクセルを選ぶ。
+    for (int dz = -radius; dz <= radius; ++dz) {
+      for (int dy = -radius; dy <= radius; ++dy) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+          int vx = cx + dx, vy = cy + dy, vz = cz + dz;
+          uint slot = hash_voxel(vx, vy, vz, params.capacity);
+          for (uint probe = 0; probe < params.capacity; ++probe) {
+            if (voxel_occupied[slot] == 0) { break; }
+            if (voxel_keys[slot * 3 + 0] == vx &&
+                voxel_keys[slot * 3 + 1] == vy &&
+                voxel_keys[slot * 3 + 2] == vz) {
+              float3 cand_mu = float3(
+                voxel_means[slot * 3 + 0], voxel_means[slot * 3 + 1], voxel_means[slot * 3 + 2]);
+              float3 cd = cand_mu - p_world;
+              float dist_sq = dot(cd, cd);
+              if (dist_sq < best_dist_sq) {
+                best_dist_sq = dist_sq;
+                best_slot = slot;
+                found = true;
+              }
+              break;
+            }
+            slot = (slot + 1u) & mask;
+          }
+        }
       }
-      slot = (slot + 1u) & mask;
     }
 
     if (found) {
+      uint slot = best_slot;
       float3 mu_t = float3(
         voxel_means[slot * 3 + 0], voxel_means[slot * 3 + 1], voxel_means[slot * 3 + 2]);
       float3 d = mu_t - p_world;
-      if (dot(d, d) <= params.max_corr_sq) {
+      {
         // C_t (row-major) → float3x3
         float3x3 Ct;
         for (int row = 0; row < 3; ++row) {
@@ -437,20 +478,26 @@ kernel void vgicp_linearize(
         contrib[28] = 1.0f;
       }
     }
+    }  // close isfinite(p_body) guard
   }
 
-  // --- threadgroup 部分和 (thread 0 が直列合算 → group 部分和を出力) ---
+  // --- threadgroup 部分和: log-step ツリー reduction ---
+  // thread 0 直列ではなく、 半分ずつ畳む。 木構造が固定なので毎回同一順序 = 決定的。
   for (uint k = 0; k < kStride; ++k) { tg[local_id][k] = contrib[k]; }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  if (local_id == 0) {
-    float sum[29];
-    for (uint k = 0; k < kStride; ++k) { sum[k] = 0.0f; }
-    for (uint i = 0; i < 128u; ++i) {
-      for (uint k = 0; k < kStride; ++k) { sum[k] += tg[i][k]; }
+  for (uint stride = 64u; stride > 0u; stride >>= 1u) {
+    if (local_id < stride) {
+      for (uint k = 0; k < kStride; ++k) {
+        tg[local_id][k] += tg[local_id + stride][k];
+      }
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  if (local_id == 0) {
     for (uint k = 0; k < kStride; ++k) {
-      partials[group_id * kStride + k] = sum[k];
+      partials[group_id * kStride + k] = tg[0][k];
     }
   }
 }
@@ -546,6 +593,8 @@ VgicpLinearization linearizeVgicpMetal(
     config.max_correspondence_distance_m * config.max_correspondence_distance_m;
   params.capacity = static_cast<std::uint32_t>(voxel_table.capacity);
   params.num_points = static_cast<std::uint32_t>(num_points);
+  params.search_radius = config.search_radius_voxels;
+  params.padding = 0;
 
   const int num_groups =
     static_cast<int>((num_points + kThreadgroupSize - 1) / kThreadgroupSize);

@@ -10,6 +10,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -120,6 +124,59 @@ TEST(MetalVgicpLinearizer, CpuReferenceProducesNonTrivialSystem)
   EXPECT_GT(cpu.hessian.norm(), 0.0);
 }
 
+TEST(MetalVgicpLinearizer, NeighborSearchFindsMoreCorrespondences)
+{
+  // 近傍探索 (radius=1) は radius=0 (自ボクセルのみ) より対応点数が増えるはず。
+  // ボクセル境界付近の点が隣接ボクセルの分布を拾えるようになるため。
+  const auto scene = makeScene(80, 1500, 0.5f);
+
+  VgicpLinearizeConfig config_self;
+  config_self.search_radius_voxels = 0;
+  VgicpLinearizeConfig config_neighbor;
+  config_neighbor.search_radius_voxels = 1;
+
+  const auto self_only = linearizeVgicpCpu(
+    scene.source_points_body, scene.source_covariances_body,
+    scene.voxel_table, Eigen::Isometry3d::Identity(), config_self);
+  const auto with_neighbor = linearizeVgicpCpu(
+    scene.source_points_body, scene.source_covariances_body,
+    scene.voxel_table, Eigen::Isometry3d::Identity(), config_neighbor);
+
+  EXPECT_GE(with_neighbor.valid_correspondences, self_only.valid_correspondences);
+}
+
+TEST(MetalVgicpLinearizer, EmptyVoxelTableYieldsNoCorrespondences)
+{
+  // 空ボクセル表 (voxel 0 個) では対応ゼロ・H ゼロ。 クラッシュしない。
+  const auto empty_table = VgicpVoxelTable::build(0.5f, {}, {}, {});
+  std::vector<Eigen::Vector3d> points = {{0.1, 0.2, 0.3}, {1.0, 1.0, 1.0}};
+  std::vector<Eigen::Matrix3d> covs(2, Eigen::Matrix3d::Identity() * 0.01);
+  VgicpLinearizeConfig config;
+  const auto cpu = linearizeVgicpCpu(
+    points, covs, empty_table, Eigen::Isometry3d::Identity(), config);
+  EXPECT_EQ(cpu.valid_correspondences, 0);
+  EXPECT_NEAR(cpu.hessian.norm(), 0.0, 1e-12);
+}
+
+TEST(MetalVgicpLinearizer, NonFinitePointsAreSkipped)
+{
+  // NaN / Inf を含む source 点はスキップされ、 有限点だけが寄与する。
+  const auto scene = makeScene(30, 100, 0.5f);
+  auto points = scene.source_points_body;
+  auto covs = scene.source_covariances_body;
+  // 数点を NaN/Inf に汚染。
+  points[5] = Eigen::Vector3d(std::nan(""), 0.0, 0.0);
+  points[10] = Eigen::Vector3d(0.0, std::numeric_limits<double>::infinity(), 0.0);
+
+  VgicpLinearizeConfig config;
+  const auto cpu = linearizeVgicpCpu(
+    points, covs, scene.voxel_table, Eigen::Isometry3d::Identity(), config);
+  // 汚染点があっても有限点で正常に H を組めている (NaN が伝播していない)。
+  EXPECT_TRUE(cpu.hessian.allFinite());
+  EXPECT_TRUE(cpu.gradient.allFinite());
+  EXPECT_GT(cpu.valid_correspondences, 0);
+}
+
 #ifdef PYLOT_LIO_HAS_METAL
 
 TEST(MetalVgicpLinearizer, GpuMatchesCpuWithinFp32Tolerance)
@@ -152,6 +209,54 @@ TEST(MetalVgicpLinearizer, GpuMatchesCpuWithinFp32Tolerance)
   EXPECT_LT((gpu.hessian - cpu.hessian).cwiseAbs().maxCoeff(), 1e-3 * hessian_scale);
   EXPECT_LT((gpu.gradient - cpu.gradient).cwiseAbs().maxCoeff(), 1e-3 * gradient_scale);
   EXPECT_NEAR(gpu.cost, cpu.cost, 1e-3 * std::max(1.0, std::abs(cpu.cost)));
+}
+
+TEST(MetalVgicpLinearizer, BenchmarkGpuVsCpu)
+{
+  // GPU vs CPU(逐次) の線形化時間を点数別に出力する。 タイミングは環境依存なので
+  // assert はせず (CI 安定性のため)、 正しさと gpu_used だけ確認する。
+  // 1 反復ぶんの linearize を複数回まわして中央値的な平均を取る。
+  const std::vector<int> point_counts = {20000, 100000, 500000};
+  VgicpLinearizeConfig config;
+  config.search_radius_voxels = 1;
+
+  for (int num_points : point_counts) {
+    // voxel 数は点数に対してほどほど (1 ボクセルあたり ~10 点程度)。
+    const int num_voxels = std::max(64, num_points / 10);
+    const auto scene = makeScene(num_voxels, num_points, 0.5f);
+    const Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
+
+    const int iterations = 5;
+    auto cpu_start = std::chrono::steady_clock::now();
+    VgicpLinearization cpu;
+    for (int i = 0; i < iterations; ++i) {
+      cpu = linearizeVgicpCpu(
+        scene.source_points_body, scene.source_covariances_body,
+        scene.voxel_table, transform, config);
+    }
+    auto cpu_end = std::chrono::steady_clock::now();
+
+    auto gpu_start = std::chrono::steady_clock::now();
+    VgicpLinearization gpu;
+    for (int i = 0; i < iterations; ++i) {
+      gpu = linearizeVgicpMetal(
+        scene.source_points_body, scene.source_covariances_body,
+        scene.voxel_table, transform, config);
+    }
+    auto gpu_end = std::chrono::steady_clock::now();
+
+    const double cpu_ms =
+      std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count() / iterations;
+    const double gpu_ms =
+      std::chrono::duration<double, std::milli>(gpu_end - gpu_start).count() / iterations;
+
+    ASSERT_TRUE(gpu.gpu_used);
+    EXPECT_EQ(gpu.valid_correspondences, cpu.valid_correspondences);
+
+    std::printf(
+      "[benchmark] points=%7d voxels=%7d  CPU(omp無/逐次)=%8.3f ms  GPU=%8.3f ms  speedup=%5.2fx\n",
+      num_points, scene.voxel_table.capacity, cpu_ms, gpu_ms, cpu_ms / gpu_ms);
+  }
 }
 
 #else  // PYLOT_LIO_HAS_METAL
