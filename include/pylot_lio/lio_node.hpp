@@ -262,6 +262,9 @@ private:
     backend_config_.enable_loop_detection =
       declare_parameter<bool>(
         "enable_loop_detection", backend_config_.enable_loop_detection);
+    backend_config_.enable_loop_diag =
+      declare_parameter<bool>(
+        "enable_loop_diag", backend_config_.enable_loop_diag);
     backend_config_.loop_num_rings =
       declare_parameter<int>("loop_num_rings", backend_config_.loop_num_rings);
     backend_config_.loop_num_sectors =
@@ -683,17 +686,19 @@ private:
         //   - cand_after_filter>0 で best_dist > threshold → 「似た場所が見つからない」
         //       → loop_score_threshold を緩める (例 0.10 → 0.20)
         //   - best_dist < threshold だが detected=false → ロジックバグ (要報告)
-        const char * detected_str = query_result.detected ? "DETECTED" : "no-loop";
-        RCLCPP_INFO(get_logger(),
-          "[loop_diag] kf=%u db=%zu cand_after_filter=%d "
-          "best_dist=%.4f (thr=%.4f) best_match_kf=%u -> %s",
-          this_keyframe_id,
-          query_result.database_size_after,
-          query_result.num_candidates_after_filter,
-          query_result.best_distance,
-          backend_config_.loop_score_threshold,
-          query_result.best_match_kf_id,
-          detected_str);
+        if (backend_config_.enable_loop_diag) {
+          const char * detected_str = query_result.detected ? "DETECTED" : "no-loop";
+          RCLCPP_INFO(get_logger(),
+            "[loop_diag] kf=%u db=%zu cand_after_filter=%d "
+            "best_dist=%.4f (thr=%.4f) best_match_kf=%u -> %s",
+            this_keyframe_id,
+            query_result.database_size_after,
+            query_result.num_candidates_after_filter,
+            query_result.best_distance,
+            backend_config_.loop_score_threshold,
+            query_result.best_match_kf_id,
+            detected_str);
+        }
       }
 
       // PCD 自動保存: keyframe 採択のタイミングで「形成 map 全体」を 1 ファイルに上書き。
