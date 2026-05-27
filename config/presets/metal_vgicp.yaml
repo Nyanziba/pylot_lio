@@ -42,4 +42,17 @@ pylot_lio:
     registration_source_covariance_num_neighbors: 10
     registration_source_covariance_plane_epsilon: 0.001
 
+    # ---- GPU / CPU の切替 (この preset は GPU only) ----
+    # registration_metal_gpu_min_points: GPU を使う最小 source 点数。
+    #   0      → 点数に関係なく常に GPU (= GPU only。 この preset の既定)。
+    #   50000  → 5万点未満は CPU VGICP に自動切替 (起動オーバヘッド回避、 省電力寄り)。
+    # ベンチでは ~5万点未満で GPU が CPU に負ける (カーネル起動 / dispatch オーバヘッド) ため、
+    # 省電力・低レイテンシ重視の本番では 50000 程度を、 GPU 挙動を試すなら 0 を使う。
+    registration_metal_gpu_min_points: 0
+
+    # ---- 多重解像度 (coarse-to-fine) VGICP ----
+    # levels=1 で単一解像度。 2 以上で粗→細 (粗いレベルは収束盆が広く初期ずれに強い)。
+    registration_metal_voxelmap_levels: 2
+    registration_metal_voxelmap_scaling_factor: 2.0
+
     state_estimator: "gicp_only"
