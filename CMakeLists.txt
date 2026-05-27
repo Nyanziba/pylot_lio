@@ -49,7 +49,9 @@ if(NOT small_gicp_FOUND)
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
     set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    add_subdirectory(${PYLOT_LIO_SMALL_GICP_SUBMODULE} EXCLUDE_FROM_ALL)
+    add_subdirectory(${PYLOT_LIO_SMALL_GICP_SUBMODULE}
+                     ${CMAKE_CURRENT_BINARY_DIR}/small_gicp
+                     EXCLUDE_FROM_ALL)
     set(small_gicp_FOUND TRUE)
     set(PYLOT_LIO_SMALL_GICP_FROM_SUBMODULE TRUE)
   else()
