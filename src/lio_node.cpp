@@ -28,7 +28,6 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/transform_broadcaster.h>
-#include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2/exceptions.h>
@@ -144,14 +143,8 @@ public:
     }
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
-    // Static TF: base_link -> lidar / base_link -> imu を 2 本だけ 1 回 publish。
-    // 外部の robot_state_publisher 等が既にこれらを出している場合は
-    // publish_sensor_static_tf=false で抑制する。
-    if (backend_config_.publish_sensor_static_tf) {
-      static_tf_broadcaster_ =
-        std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
-      publishSensorStaticTransforms();
-    }
+    // sensor static TF (base_link -> lidar/imu) はこのノードでは publish しない。
+    // それを出す責務は外部 (robot_state_publisher / URDF) にあるため。
 
     // Keyframe selector を生成 (現状 1 種類だけだが、抽象 IF 経由で差し替え可能)。
     DistanceKeyframeSelector::Config keyframe_config;
@@ -338,6 +331,10 @@ private:
     backend_config_.registration_max_iterations =
       declare_parameter<int>(
         "registration_max_iterations", backend_config_.registration_max_iterations);
+    backend_config_.registration_parallel_backend =
+      declare_parameter<std::string>(
+        "registration_parallel_backend",
+        backend_config_.registration_parallel_backend);
     backend_config_.registration_convergence_translation_m =
       declare_parameter<double>(
         "registration_convergence_translation_m",
@@ -350,6 +347,14 @@ private:
       declare_parameter<double>(
         "registration_huber_threshold",
         backend_config_.registration_huber_threshold);
+    backend_config_.registration_source_covariance_num_neighbors =
+      declare_parameter<int>(
+        "registration_source_covariance_num_neighbors",
+        backend_config_.registration_source_covariance_num_neighbors);
+    backend_config_.registration_source_covariance_plane_epsilon =
+      declare_parameter<double>(
+        "registration_source_covariance_plane_epsilon",
+        backend_config_.registration_source_covariance_plane_epsilon);
     backend_config_.enable_degenerate_regularization =
       declare_parameter<bool>(
         "enable_degenerate_regularization",
@@ -394,48 +399,16 @@ private:
         "extrinsic_rotation_imu_from_lidar_row_major",
         backend_config_.extrinsic_rotation_imu_from_lidar_row_major);
 
-    // Static TF (base_link -> lidar / imu) パラメータ
-    backend_config_.publish_sensor_static_tf =
-      declare_parameter<bool>(
-        "publish_sensor_static_tf", backend_config_.publish_sensor_static_tf);
+    // lidar_frame_id / imu_frame_id は extrinsic_source=tf のときの TF lookup
+    // (imu_frame <- lidar_frame) でのみ使う。 sensor static TF (base_link -> lidar/imu)
+    // の publish はこのノードの責務ではないため行わない (外部の robot_state_publisher /
+    // URDF が出す前提)。 従って base_link_to_lidar/imu_* や publish_sensor_static_tf は持たない。
     backend_config_.lidar_frame_id =
       declare_parameter<std::string>(
         "lidar_frame_id", backend_config_.lidar_frame_id);
     backend_config_.imu_frame_id =
       declare_parameter<std::string>(
         "imu_frame_id", backend_config_.imu_frame_id);
-    backend_config_.base_link_to_lidar_translation_x =
-      declare_parameter<double>(
-        "base_link_to_lidar_translation_x",
-        backend_config_.base_link_to_lidar_translation_x);
-    backend_config_.base_link_to_lidar_translation_y =
-      declare_parameter<double>(
-        "base_link_to_lidar_translation_y",
-        backend_config_.base_link_to_lidar_translation_y);
-    backend_config_.base_link_to_lidar_translation_z =
-      declare_parameter<double>(
-        "base_link_to_lidar_translation_z",
-        backend_config_.base_link_to_lidar_translation_z);
-    backend_config_.base_link_to_lidar_rotation_row_major =
-      declare_parameter<std::vector<double>>(
-        "base_link_to_lidar_rotation_row_major",
-        backend_config_.base_link_to_lidar_rotation_row_major);
-    backend_config_.base_link_to_imu_translation_x =
-      declare_parameter<double>(
-        "base_link_to_imu_translation_x",
-        backend_config_.base_link_to_imu_translation_x);
-    backend_config_.base_link_to_imu_translation_y =
-      declare_parameter<double>(
-        "base_link_to_imu_translation_y",
-        backend_config_.base_link_to_imu_translation_y);
-    backend_config_.base_link_to_imu_translation_z =
-      declare_parameter<double>(
-        "base_link_to_imu_translation_z",
-        backend_config_.base_link_to_imu_translation_z);
-    backend_config_.base_link_to_imu_rotation_row_major =
-      declare_parameter<std::vector<double>>(
-        "base_link_to_imu_rotation_row_major",
-        backend_config_.base_link_to_imu_rotation_row_major);
 
     backend_config_.extrinsic_source =
       declare_parameter<std::string>(
@@ -1033,64 +1006,6 @@ private:
     }
   }
 
-  // base_link → lidar_frame と base_link → imu_frame の static TF を 2 本だけ publish する。
-  // 起動時に 1 回呼ばれる。 既存の URDF / robot_state_publisher が同じ TF を出している
-  // 環境では publish_sensor_static_tf=false で抑制すること (TF tree 衝突を避ける)。
-  void publishSensorStaticTransforms()
-  {
-    auto build_transform = [this](
-      const std::string & child_frame_id,
-      double tx, double ty, double tz,
-      const std::vector<double> & rotation_row_major) -> geometry_msgs::msg::TransformStamped
-    {
-      geometry_msgs::msg::TransformStamped transform_stamped;
-      transform_stamped.header.stamp = now();
-      transform_stamped.header.frame_id = body_frame_id_;
-      transform_stamped.child_frame_id = child_frame_id;
-      transform_stamped.transform.translation.x = tx;
-      transform_stamped.transform.translation.y = ty;
-      transform_stamped.transform.translation.z = tz;
-      // row-major 9 要素を Matrix3d に詰めて quaternion に変換。
-      Eigen::Matrix3d rotation_matrix = Eigen::Matrix3d::Identity();
-      if (rotation_row_major.size() == 9) {
-        for (int row_index = 0; row_index < 3; ++row_index) {
-          for (int column_index = 0; column_index < 3; ++column_index) {
-            rotation_matrix(row_index, column_index) =
-              rotation_row_major[row_index * 3 + column_index];
-          }
-        }
-      } else {
-        RCLCPP_WARN(get_logger(),
-          "Rotation row_major size != 9 for child='%s'; falling back to identity.",
-          child_frame_id.c_str());
-      }
-      const Eigen::Quaterniond quaternion(rotation_matrix);
-      transform_stamped.transform.rotation.x = quaternion.x();
-      transform_stamped.transform.rotation.y = quaternion.y();
-      transform_stamped.transform.rotation.z = quaternion.z();
-      transform_stamped.transform.rotation.w = quaternion.w();
-      return transform_stamped;
-    };
-
-    const auto base_to_lidar = build_transform(
-      backend_config_.lidar_frame_id,
-      backend_config_.base_link_to_lidar_translation_x,
-      backend_config_.base_link_to_lidar_translation_y,
-      backend_config_.base_link_to_lidar_translation_z,
-      backend_config_.base_link_to_lidar_rotation_row_major);
-    const auto base_to_imu = build_transform(
-      backend_config_.imu_frame_id,
-      backend_config_.base_link_to_imu_translation_x,
-      backend_config_.base_link_to_imu_translation_y,
-      backend_config_.base_link_to_imu_translation_z,
-      backend_config_.base_link_to_imu_rotation_row_major);
-    static_tf_broadcaster_->sendTransform({base_to_lidar, base_to_imu});
-
-    RCLCPP_INFO(get_logger(),
-      "Static TF published: %s -> %s, %s -> %s",
-      body_frame_id_.c_str(), backend_config_.lidar_frame_id.c_str(),
-      body_frame_id_.c_str(), backend_config_.imu_frame_id.c_str());
-  }
 
   // 5 秒 (パラメータ) ごとに submap_manager の「全体マップ」を取り出し publish する。
   // backends_.point_cloud_map が VoxelKeyframeSubmapManager でない場合は何もしない
@@ -1257,7 +1172,6 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr diag_publisher_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   // 起動時 1 回だけ publish する base_link → lidar / imu の static TF。
-  std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
 
   int cloud_publish_counter_ = 0;
   // /lio/cloud_world は全マップを toROSMsg してネットワークに流すので重い。

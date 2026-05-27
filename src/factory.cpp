@@ -112,12 +112,17 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
       config.registration_convergence_rotation_rad;
     plain_gicp_config.huber_threshold = config.registration_huber_threshold;
     plain_gicp_config.num_threads = config.registration_num_threads;
+    plain_gicp_config.source_covariance_num_neighbors =
+      config.registration_source_covariance_num_neighbors;
+    plain_gicp_config.source_covariance_plane_epsilon =
+      config.registration_source_covariance_plane_epsilon;
     plain_gicp_config.enable_degenerate_regularization =
       config.enable_degenerate_regularization;
     plain_gicp_config.rotation_eigenvalue_threshold = config.rotation_eigenvalue_threshold;
     plain_gicp_config.translation_eigenvalue_threshold =
       config.translation_eigenvalue_threshold;
     plain_gicp_config.regularization_base_factor = config.regularization_base_factor;
+    plain_gicp_config.parallel_backend = config.registration_parallel_backend;
     return std::make_unique<PlainGicpRegistration>(plain_gicp_config);
   }
 #ifdef PYLOT_LIO_HAS_SMALL_GICP
@@ -133,6 +138,7 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
       config.registration_max_correspondence_m;
     small_gicp_config.num_threads = config.registration_num_threads;
     small_gicp_config.max_iterations = config.registration_max_iterations;
+    small_gicp_config.parallel_backend = config.registration_parallel_backend;
     return std::make_unique<SmallGicpRegistration>(small_gicp_config);
   }
 #endif

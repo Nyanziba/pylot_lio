@@ -87,12 +87,21 @@ struct LioBackendConfig
   double registration_max_correspondence_m = 2.0;
   int registration_num_threads = 4;
   int registration_max_iterations = 30;
+  // 並列バックエンド: "omp" (OpenMP) | "tbb" (Intel TBB)。
+  // plain_gicp と small_gicp_(v)gicp の両方で共通に使う。 ビルドに TBB が含まれない
+  // (PYLOT_LIO_HAS_TBB 未定義) 場合は "tbb" 指定でも OpenMP に自動フォールバックする。
+  std::string registration_parallel_backend = "omp";
 
   // plain_gicp 固有のチューニング (small_gicp 系では無視される)。
   // Gauss-Newton の停止条件と Huber ロバスト重みの転換点を ROS パラメータから触れる。
   double registration_convergence_translation_m = 1e-4;
   double registration_convergence_rotation_rad = 1e-4;
   double registration_huber_threshold = 1.0;
+
+  // plain_gicp 用: source 共分散 C_s (GICP distribution-to-distribution) の計算。
+  // 近傍点数 k と平面性正則化の最小固有値 epsilon。 small_gicp 系では無視される。
+  int registration_source_covariance_num_neighbors = 10;
+  double registration_source_covariance_plane_epsilon = 1e-3;
 
   // plain_gicp 用: 縮退方向 Tikhonov 正則化 (X-ICP / sycl_points 流)。
   // 廊下や対称的な環境で回転/並進が拘束されないときに姿勢が暴れるのを防ぐ。
@@ -131,31 +140,12 @@ struct LioBackendConfig
   };
 
   // ================ Static TF (base_link -> lidar / imu) ================
-  // lio_node 起動時に StaticTransformBroadcaster で 2 本 publish するための定義。
-  // IESKF 内部用の extrinsic_*_imu_from_lidar とは別管理で、 yaml 上で値を合わせる
-  // のは利用者の責任 (将来は base_link 起点に一本化する PR を予定)。
+  // lidar_frame_id / imu_frame_id は extrinsic_source="tf" のときの TF lookup
+  // (imu_frame <- lidar_frame) でのみ使う。 sensor static TF (base_link -> lidar/imu) の
+  // publish はこのノードの責務ではない (外部の robot_state_publisher / URDF が出す前提)
+  // ため、 base_link_to_lidar/imu_* や publish_sensor_static_tf は持たない。
   std::string lidar_frame_id = "lidar_frame";
   std::string imu_frame_id = "imu_frame";
-  // base_link -> lidar
-  double base_link_to_lidar_translation_x = 0.0;
-  double base_link_to_lidar_translation_y = 0.0;
-  double base_link_to_lidar_translation_z = 0.0;
-  std::vector<double> base_link_to_lidar_rotation_row_major = {
-    1.0, 0.0, 0.0,
-    0.0, 1.0, 0.0,
-    0.0, 0.0, 1.0
-  };
-  // base_link -> imu
-  double base_link_to_imu_translation_x = 0.0;
-  double base_link_to_imu_translation_y = 0.0;
-  double base_link_to_imu_translation_z = 0.0;
-  std::vector<double> base_link_to_imu_rotation_row_major = {
-    1.0, 0.0, 0.0,
-    0.0, 1.0, 0.0,
-    0.0, 0.0, 1.0
-  };
-  // false にすると static TF を出さない (外部 URDF / robot_state_publisher が出している前提のとき)
-  bool publish_sensor_static_tf = true;
 
   // extrinsic の取得元:
   //   "config" → yaml の extrinsic_*_imu_from_lidar を IESKF に直接渡す (デフォルト)
