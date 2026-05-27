@@ -135,8 +135,9 @@ gpu::VgicpVoxelTable extractVoxelTable(const VoxelMap & voxel_map)
 }  // namespace
 
 MetalVgicpRegistration::MetalVgicpRegistration(const Config & config)
-: config_(config)
+: config_(config), engine_(std::make_shared<gpu::MetalVgicpEngine>())
 {
+  // engine_ の ctor で device/PSO を 1 回構築する (Metal 無効ビルドでは isValid()=false)。
 }
 
 bool MetalVgicpRegistration::isAvailable()
@@ -179,6 +180,15 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
     return result;
   }
 
+  // 永続エンジンが無効 (Metal 無し) なら未収束で返す (factory がフォールバック)。
+  if (!engine_ || !engine_->isValid()) {
+    result.converged = false;
+    return result;
+  }
+  // target/source は align で 1 回だけアップロード。 反復では transform だけ更新する。
+  engine_->setTarget(voxel_table);
+  engine_->setSource(source_points, source_covariances);
+
   gpu::VgicpLinearizeConfig lin_config;
   lin_config.huber_threshold = static_cast<float>(config_.huber_threshold);
   lin_config.max_correspondence_distance_m =
@@ -187,8 +197,7 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
 
   Eigen::Isometry3d current = initial_transform_world_body;
   for (int iteration = 0; iteration < config_.max_iterations; ++iteration) {
-    const gpu::VgicpLinearization lin = gpu::linearizeVgicpMetal(
-      source_points, source_covariances, voxel_table, current, lin_config);
+    const gpu::VgicpLinearization lin = engine_->linearize(current, lin_config);
 
     if (!lin.gpu_used) {
       // Metal が使えなかった (非対応ビルド / デバイス無)。 factory がフォールバック
