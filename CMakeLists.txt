@@ -119,6 +119,7 @@ set(PYLOT_LIO_CORE_SOURCES
   src/map/normal_map.cpp
   src/map/voxel_random_map.cpp
   src/map/voxel_keyframe_submap_map.cpp
+  src/registration/source_covariance.cpp
   src/registration/plain_gicp_registration.cpp
   src/registration/metal_vgicp_registration.cpp
   src/estimator/ieskf_estimator.cpp
