@@ -34,6 +34,14 @@ public:
     double max_correspondence_distance_m = 2.0;
     int num_threads = 4;
     int max_iterations = 30;
+    // 並列バックエンド: "omp" (OpenMP) | "tbb" (Intel TBB)。
+    // RegistrationPCL は OpenMP 固定だったため、 ここでは低レベル
+    // small_gicp::Registration<GICPFactor, ParallelReductionXXX> を直接使い、
+    // この文字列で reduction 型を切り替える。 TBB 非対応ビルド
+    // (PYLOT_LIO_HAS_TBB 未定義) では "tbb" 指定でも OpenMP にフォールバックする。
+    std::string parallel_backend = "omp";
+    // 共分散推定に使う近傍点数 (RegistrationPCL の k_correspondences 既定値と同じ)。
+    int covariance_num_neighbors = 20;
   };
 
   explicit SmallGicpRegistration(const Config & config);

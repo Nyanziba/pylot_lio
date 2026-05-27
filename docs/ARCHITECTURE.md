@@ -48,6 +48,14 @@
         └── TF: world → base_link
 ```
 
+> **TF の責務**: lio_node が publish する TF は `world → base_link`（オドメトリ結果）のみ。
+> センサ取り付けの static TF（`base_link → lidar` / `base_link → imu`）は**出さない** ──
+> それを出す責務は外部の `robot_state_publisher` / URDF にあるため。lio_node は
+> `extrinsic_source="tf"` のとき TF tree から `imu_frame ← lidar_frame` を **lookup（消費）** するだけで、
+> `extrinsic_source="config"`（既定）なら yaml の `extrinsic_*_imu_from_lidar` を直接使う。
+
+並列バックエンド（OpenMP / Intel TBB）の切替と性能比較は [PARALLEL_BACKENDS.md](PARALLEL_BACKENDS.md) を参照。
+
 ## Factory パターン
 
 `include/pylot_lio/factory.hpp` の `createBackendsFromConfig(LioBackendConfig)` が単一エントリポイント。

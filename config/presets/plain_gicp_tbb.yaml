@@ -1,0 +1,38 @@
+# Preset: 外部依存ゼロ (plain_gicp) + Intel TBB 並列化。
+#
+# plain_gicp_openmp.yaml と registration_parallel_backend 以外は同一。
+# 同じ rosbag を OpenMP 版 (plain_gicp_openmp.yaml) と本構成で順に流せば、
+# 並列バックエンドだけを変えた公平な性能比較ができる。
+#
+# 並列化単位: plain_gicp_registration の内側 source 点ループを tbb::parallel_reduce で
+# 分割し、 部分和 (Hessian / gradient / cost / count) を join で畳み込む。
+# Gauss-Newton 反復間は時系列依存のため並列化しない。
+#
+# 注意:
+#   - "tbb" を指定しても TBB 非対応ビルド (PYLOT_LIO_HAS_TBB 未定義) では OpenMP に
+#     自動フォールバックし、 stderr に一度だけ警告が出る。
+#   - TBB はグローバルなタスクスケジューラを使うため registration_num_threads は
+#     KdTree 構築側でのみ意味を持ち、 reduction のスレッド数には影響しない
+#     (TBB ランタイムが自動決定する)。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.3
+
+    map: "voxel_map"
+    map_voxel_size_m: 0.5
+    map_min_points_per_cell: 1
+
+    registration: "plain_gicp"
+    registration_max_iterations: 20
+    registration_max_correspondence_m: 2.0
+    # 並列バックエンド: ここが OpenMP 版との唯一の差分。
+    registration_parallel_backend: "tbb"
+    registration_num_threads: 4
+    # Gauss-Newton 停止条件 (並進 / 回転)。
+    registration_convergence_translation_m: 0.0001
+    registration_convergence_rotation_rad: 0.0001
+    # Huber ロバスト重み。
+    registration_huber_threshold: 1.0
+
+    state_estimator: "gicp_only"

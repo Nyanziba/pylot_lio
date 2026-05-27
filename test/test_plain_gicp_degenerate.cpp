@@ -6,6 +6,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <string>
+
 #include "pylot_lio/map/voxel_map.hpp"
 #include "pylot_lio/registration/plain_gicp_registration.hpp"
 
@@ -146,6 +149,84 @@ TEST(PlainGicpOpenMP, SingleAndMultiThreadProduceEquivalentResults)
   EXPECT_LT(std::abs(diff_axis_angle.angle()), 1e-6);
 
   EXPECT_NEAR(result_single.final_cost, result_multi.final_cost, 1e-6);
+}
+
+// ============================================================
+// source 共分散 (GICP distribution-to-distribution: (C_t + R C_s R^T)^{-1})
+// ============================================================
+
+TEST(PlainGicpSourceCovariance, PlanarNormalOffsetIsCorrected)
+{
+  // target: Z=0 平面格子。 source: 同じ格子を法線方向 (+Z) に 0.1 m ずらしたもの。
+  // GICP の plane-to-plane 重みは法線方向のズレを罰するので、 align は
+  // source を平面に戻す = Z 並進 ≈ -0.1 m を出すはず。 平面内 (XY) は対称格子で
+  // 縮退方向なので大きくは動かない。
+  VoxelMap::Config map_config;
+  map_config.voxel_size_m = 0.3;
+  map_config.min_points_per_cell_for_covariance = 1;
+  VoxelMap voxel_map(map_config);
+
+  const auto target_plane = makeFlatPlaneCloud();
+  voxel_map.insertScan(target_plane, Eigen::Isometry3d::Identity());
+
+  PointCloud source_cloud;
+  for (const auto & point : target_plane.points) {
+    Point shifted = point;
+    shifted.z = point.z + 0.1f;
+    source_cloud.push_back(shifted);
+  }
+
+  PlainGicpRegistration::Config config;
+  config.max_iterations = 30;
+  config.max_correspondence_distance_m = 3.0;
+  config.source_covariance_num_neighbors = 10;
+  config.source_covariance_plane_epsilon = 1e-3;
+
+  PlainGicpRegistration registration(config);
+  const auto result =
+    registration.align(source_cloud, voxel_map, Eigen::Isometry3d::Identity());
+
+  EXPECT_NEAR(result.transform_world_body.translation().z(), -0.1, 0.02);
+  EXPECT_LT(std::abs(result.transform_world_body.translation().x()), 0.05);
+  EXPECT_LT(std::abs(result.transform_world_body.translation().y()), 0.05);
+}
+
+TEST(PlainGicpSourceCovariance, DescribeReportsSourceCovarianceParams)
+{
+  // describe() に source 共分散パラメータ (k / epsilon) が出ること。
+  PlainGicpRegistration::Config config;
+  config.source_covariance_num_neighbors = 7;
+  PlainGicpRegistration registration(config);
+
+  const std::string description = registration.describe();
+  EXPECT_NE(description.find("src_cov_k=7"), std::string::npos);
+  EXPECT_NE(description.find("src_cov_eps="), std::string::npos);
+}
+
+TEST(PlainGicpSourceCovariance, HandlesTinyCloudGracefully)
+{
+  // source が 3 点未満だと近傍共分散を組めない。 epsilon * I フォールバックで
+  // クラッシュせず align が返ることを確認する (退化入力の頑健性)。
+  VoxelMap::Config map_config;
+  map_config.voxel_size_m = 0.3;
+  map_config.min_points_per_cell_for_covariance = 1;
+  VoxelMap voxel_map(map_config);
+  voxel_map.insertScan(makeFlatPlaneCloud(), Eigen::Isometry3d::Identity());
+
+  PointCloud tiny_source;
+  Point single_point;
+  single_point.x = 0.0f;
+  single_point.y = 0.0f;
+  single_point.z = 0.05f;
+  single_point.intensity = 0.0f;
+  tiny_source.push_back(single_point);
+
+  PlainGicpRegistration::Config config;
+  PlainGicpRegistration registration(config);
+
+  EXPECT_NO_THROW({
+    registration.align(tiny_source, voxel_map, Eigen::Isometry3d::Identity());
+  });
 }
 
 }  // namespace pylot_lio
