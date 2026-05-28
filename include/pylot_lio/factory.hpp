@@ -151,16 +151,6 @@ struct LioBackendConfig
   // state estimator
   std::string state_estimator_name = "ieskf";    // ieskf | hgo | gicp_only
 
-  // ---- registration rejection (gicp_only 専用、 IESKF/HGO は IMU で別途守られる) ----
-  // registration が物理的にあり得ない補正を出した frame を破棄して CV 予測を採用する
-  // フォールバック。 局所的に LiDAR の対応が取れない (開けた場所・動的物体・geometric
-  // degeneracy) 場面で 1 frame の誤登録が pose を 2-3m 飛ばし、 以降の registration を
-  // 連鎖的に壊す問題を防ぐ。
-  bool gicp_only_rejection_enabled = false;
-  double gicp_only_max_translation_correction_m = 0.5;
-  double gicp_only_max_rotation_correction_deg = 30.0;
-  int gicp_only_min_correspondences_when_unconverged = 15000;
-
   // IMU linear_acceleration の単位補正係数。 sensor_msgs/Imu の規約は m/s² だが、
   // Livox driver 等は実際には g 単位で出してくるケースがある (静止時 acc.z ≈ 1.0)。
   // その場合は 9.80665 を指定して m/s² にスケールアップする。 規約通りの IMU では 1.0。

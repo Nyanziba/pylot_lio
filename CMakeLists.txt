@@ -131,7 +131,6 @@ set(PYLOT_LIO_CORE_SOURCES
   src/estimator/gicp_only_estimator.cpp
   src/keyframe/distance_keyframe_selector.cpp
   src/livox_conversion.cpp
-  src/deskew.cpp
   src/loop/scan_context.cpp
   src/loop/scan_context_loop_detector.cpp
   src/loop/loop_closure_icp.cpp
@@ -365,8 +364,6 @@ if(BUILD_TESTING)
     test_metal_vgicp_registration
     test_metal_covariance_estimator
     test_metal_voxel_downsampler
-    test_ground_constraint
-    test_deskew
   )
 
   foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)

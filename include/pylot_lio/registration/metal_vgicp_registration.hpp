@@ -88,20 +88,15 @@ public:
     bool enable_ground_constraint = false;
     // 拘束の強さ。 内部で VGICP の回転剛性 (回転ヘッシアン対角の平均) に対する比として
     // スケールするので、 1.0 で「幾何項の回転剛性と同程度」、 大きいほど地面水平が優先。
-    // 効かない (まだ傾く) なら上げる (例 3〜10)、 床に貼り付きすぎ・段差で不自然なら下げる。
     double ground_constraint_weight = 1.0;
     // 最低 world z からこの高さ [m] までを地面候補とする。
     double ground_band_m = 0.5;
     // 推定法線が (0,0,1) からこの角度 [deg] を超えて傾いていたら地面とみなさない。
     double ground_max_tilt_deg = 30.0;
-    // damping: 1 回の align で加える leveling 補正の上限 [deg]。 等速度モデルが外挿する
-    // 回転デルタをこれ以下に抑え、 ノイズ・誤検出でも急スナップ (振動/ジャンプ) を防ぐ。
-    // お椀化はゆっくり積もるので 1°/frame 程度で十分追いつく。 0 で無制限 (hard 拘束)。
+    // damping: 1 align あたりの leveling 補正上限 [deg]。 0 で無制限 (hard 拘束)。
     double ground_max_correction_per_frame_deg = 1.0;
-    // 振動検出: 前フレームの地面法線 (body) との角度差がこれ [deg] を超えるフレームは
-    // 「車体ピッチ振動中」 とみなして拘束をスキップ。 凸凹路面で水平化が物理運動に逆らって
-    // SLAM を破綻させるのを防ぐ。 お椀化ドリフトは連続フレーム間でほぼ法線が変わらないので
-    // 影響を受けず、 振動 (>= 数°/frame の急変) だけ自動 OFF。 0 で振動ゲート無効。
+    // 振動ゲート: 前フレームの地面法線 (body) からの角度差がこれ [deg] を超えるフレームは
+    // 拘束をスキップ (車体ピッチ振動中とみなす)。 0 で振動ゲート無効。
     double ground_vibration_threshold_deg = 3.0;
   };
 
