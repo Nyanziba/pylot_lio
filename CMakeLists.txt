@@ -165,42 +165,27 @@ else()
 endif()
 
 # ============================================================
-# Optional GPU backend: Apple Metal (metal-cpp)
-# macOS でのみ有効。 metal-cpp は 3rdparty/metal-cpp に vendor 済みの
-# ヘッダオンリー配布 (Apache-2.0)。 Metal/Foundation フレームワークをリンクし、
-# PYLOT_LIO_HAS_METAL を定義する。 まずは saxpy プローブ (土台検証) のみ。
-# 非 Apple ビルドでは metal_compute_probe.cpp はスタブとしてビルドされる。
+# Optional GPU backend: Apple Metal
+# Metal カーネル本体は別パッケージ metal_gpu_kernels へ移管済み (Phase 1-1)。
+# ここではそれを find_package で取り込み、 consumer (metal_vgicp_registration 等)
+# だけ pylot_lio に残す。 METAL_GPU_KERNELS_HAS_METAL は metal_gpu_kernels が
+# PUBLIC で定義するので、 consumer 側はそれを #ifdef でチェックする。
+# 非 Apple では metal_gpu_kernels がビルドできず find_package が失敗するため、
+# 当該プラットフォームでは QUIET 検出にフォールバックして Metal 経路を無効化。
 # ============================================================
-set(PYLOT_LIO_METALCPP_INCLUDE
-    "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/metal-cpp")
-target_sources(pylot_lio_core PRIVATE
-  src/gpu/metal_compute_probe.cpp
-  src/gpu/metal_vgicp_linearizer.cpp
-  src/gpu/metal_covariance_estimator.cpp
-  src/gpu/metal_voxel_downsampler.cpp
-)
-if(APPLE AND IS_DIRECTORY "${PYLOT_LIO_METALCPP_INCLUDE}/Metal")
-  find_library(METAL_FRAMEWORK Metal)
-  find_library(FOUNDATION_FRAMEWORK Foundation)
-  if(METAL_FRAMEWORK AND FOUNDATION_FRAMEWORK)
-    target_include_directories(pylot_lio_core PRIVATE "${PYLOT_LIO_METALCPP_INCLUDE}")
-    target_link_libraries(pylot_lio_core ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
-    target_compile_definitions(pylot_lio_core PUBLIC PYLOT_LIO_HAS_METAL=1)
-    # metal-cpp は anonymous struct (GNU 拡張) を使うため、 metal-cpp を含む TU だけ
-    # 警告を抑制する (-Wall -Wextra -Wpedantic 下で -Werror 化しても落ちないように)。
-    set_source_files_properties(
-      src/gpu/metal_compute_probe.cpp
-      src/gpu/metal_vgicp_linearizer.cpp
-      src/gpu/metal_covariance_estimator.cpp
-      src/gpu/metal_voxel_downsampler.cpp
-      PROPERTIES
-      COMPILE_OPTIONS "-Wno-gnu-anonymous-struct;-Wno-nested-anon-types")
-    message(STATUS "Metal found; 'metal' GPU backend probe enabled (metal-cpp).")
-  else()
-    message(STATUS "Metal/Foundation frameworks not found; Metal probe builds as stub.")
-  endif()
+if(APPLE)
+  find_package(metal_gpu_kernels REQUIRED)
 else()
-  message(STATUS "Not Apple or metal-cpp absent; Metal probe builds as stub.")
+  find_package(metal_gpu_kernels QUIET)
+endif()
+if(metal_gpu_kernels_FOUND)
+  # ament_target_dependencies は include dirs / link libs / definitions を
+  # ament_export_* 経由で伝播させる。 target_link_libraries だけだと
+  # ament_export_include_directories で公開した include path が引かれない。
+  ament_target_dependencies(pylot_lio_core metal_gpu_kernels)
+  message(STATUS "metal_gpu_kernels found; 'metal' GPU backend enabled.")
+else()
+  message(STATUS "metal_gpu_kernels not found; 'metal' GPU backend disabled.")
 endif()
 
 # ============================================================
@@ -359,11 +344,7 @@ if(BUILD_TESTING)
     test_scan_context
     test_pose_graph_optimizer
     test_livox_conversion
-    test_metal_compute_probe
-    test_metal_vgicp_linearizer
-    test_metal_vgicp_registration
-    test_metal_covariance_estimator
-    test_metal_voxel_downsampler
+    test_metal_vgicp_registration  # kernel テストは metal_gpu_kernels へ移管済み
   )
 
   foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)

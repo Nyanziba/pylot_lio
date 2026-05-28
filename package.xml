@@ -27,6 +27,9 @@
   <depend>pcl_conversions</depend>
   <depend>pcl_ros</depend>
 
+  <!-- Metal GPU kernels (macOS only; Phase 1-1 で移管済み) -->
+  <depend>metal_gpu_kernels</depend>
+
   <build_depend>small_gicp</build_depend>
   <exec_depend>small_gicp</exec_depend>
 

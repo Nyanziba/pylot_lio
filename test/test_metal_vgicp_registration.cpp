@@ -73,7 +73,7 @@ PointCloud perturbCloud(const PointCloud & target, const Eigen::Isometry3d & per
 
 }  // namespace
 
-#ifdef PYLOT_LIO_HAS_METAL
+#ifdef METAL_GPU_KERNELS_HAS_METAL
 
 TEST(MetalVgicpRegistration, ConvergesToKnownTransform)
 {
@@ -357,7 +357,7 @@ TEST(MetalVgicpRegistration, ConvergesWithVoxelKeyframeSubmapTarget)
   expectConvergesAgainstMap(map, 0.3);
 }
 
-#else  // PYLOT_LIO_HAS_METAL
+#else  // METAL_GPU_KERNELS_HAS_METAL
 
 TEST(MetalVgicpRegistration, UnavailableReportsNotConverged)
 {
@@ -371,7 +371,7 @@ TEST(MetalVgicpRegistration, UnavailableReportsNotConverged)
   EXPECT_FALSE(result.converged);
 }
 
-#endif  // PYLOT_LIO_HAS_METAL
+#endif  // METAL_GPU_KERNELS_HAS_METAL
 
 }  // namespace pylot_lio
 

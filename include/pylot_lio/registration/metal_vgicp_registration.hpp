@@ -9,8 +9,8 @@
 
 #include <Eigen/Core>
 
-#include "pylot_lio/gpu/metal_covariance_estimator.hpp"
-#include "pylot_lio/gpu/metal_vgicp_linearizer.hpp"
+#include "metal_gpu_kernels/metal_covariance_estimator.hpp"
+#include "metal_gpu_kernels/metal_vgicp_linearizer.hpp"
 #include "pylot_lio/registration/i_registration.hpp"
 
 namespace pylot_lio
@@ -30,7 +30,7 @@ namespace pylot_lio
 //   - source 共分散は GPU (Metal) か PCL KdTree で計算 (use_gpu_source_covariance)。
 //   - fp32 精度 (Apple GPU は fp64 不可)。 omp/tbb とビット一致はしない。
 //
-// PYLOT_LIO_HAS_METAL 無効ビルドでは align は常に converged=false を返す
+// METAL_GPU_KERNELS_HAS_METAL 無効ビルドでは align は常に converged=false を返す
 // (factory 側で plain_gicp にフォールバックさせる前提)。
 class MetalVgicpRegistration : public IRegistration
 {
@@ -109,7 +109,7 @@ public:
 
   std::string describe() const override;
 
-  // このビルドで Metal バックエンドが利用可能か (PYLOT_LIO_HAS_METAL)。
+  // このビルドで Metal バックエンドが利用可能か (METAL_GPU_KERNELS_HAS_METAL)。
   // factory が "metal_vgicp" 指定時にフォールバック要否を判定するのに使う。
   static bool isAvailable();
 
@@ -118,10 +118,10 @@ private:
   // GPU リソース (device/PSO) を align 間で使い回すための永続エンジン。
   // PSO コンパイル (~100ms) を毎 align で繰り返さないよう、 registration インスタンスが
   // 1 つ保持する。 Metal 無効ビルドでは isValid()=false のスタブ。
-  std::shared_ptr<gpu::MetalVgicpEngine> engine_;
+  std::shared_ptr<metal_gpu_kernels::MetalVgicpEngine> engine_;
   // source 共分散推定 (前処理) を GPU で行う永続エンジン。 linearizer とは別の PSO を
   // 持つため独立に保持する。 use_gpu_source_covariance=false のときは未使用。
-  std::shared_ptr<gpu::MetalCovarianceEngine> covariance_engine_;
+  std::shared_ptr<metal_gpu_kernels::MetalCovarianceEngine> covariance_engine_;
   // 振動検出用: 前 align で採用した地面法線 (body)。 次フレームでの急変判定に使う。
   std::optional<Eigen::Vector3d> previous_ground_normal_body_;
   // CV 予測診断用: 全 align の通し番号。 N スキャンごとに [CV] ログを出す間引きに使う。

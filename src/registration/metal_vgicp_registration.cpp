@@ -13,7 +13,7 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 
-#include "pylot_lio/gpu/metal_vgicp_linearizer.hpp"
+#include "metal_gpu_kernels/metal_vgicp_linearizer.hpp"
 #include "pylot_lio/lie_algebra.hpp"
 #include "pylot_lio/map/gaussian_voxel.hpp"
 #include "pylot_lio/map/normal_map.hpp"
@@ -33,7 +33,7 @@ namespace
 // 自分のボクセルに一意に落ちるので実質そのまま (= 最細レベル)。
 // base_voxels はマップ非依存の中間表現 (voxel_map/normal_map の保存済みガウス、 もしくは
 // point ベースマップを voxelizePointsToGaussians した結果)。
-gpu::VgicpVoxelTable buildLevelTable(
+metal_gpu_kernels::VgicpVoxelTable buildLevelTable(
   const std::vector<GaussianVoxel> & base_voxels,
   double level_voxel_size,
   double eigen_floor)
@@ -93,13 +93,13 @@ gpu::VgicpVoxelTable buildLevelTable(
       solver.eigenvectors() * eigenvalues.asDiagonal() * solver.eigenvectors().transpose());
   }
 
-  return gpu::VgicpVoxelTable::build(
+  return metal_gpu_kernels::VgicpVoxelTable::build(
     static_cast<float>(level_voxel_size), coords, means, covs);
 }
 
 // 多重解像度テーブルを「粗→細」の順で構築する。 level i の voxel_size は
 // base * scaling^(levels-1-i) なので、 先頭が最も粗く末尾 (= base) が最も細かい。
-std::vector<gpu::VgicpVoxelTable> buildMultiResolutionTables(
+std::vector<metal_gpu_kernels::VgicpVoxelTable> buildMultiResolutionTables(
   const std::vector<GaussianVoxel> & base_voxels,
   double base_voxel_size,
   int levels,
@@ -107,7 +107,7 @@ std::vector<gpu::VgicpVoxelTable> buildMultiResolutionTables(
   double eigen_floor)
 {
   const int clamped_levels = std::max(1, levels);
-  std::vector<gpu::VgicpVoxelTable> tables;
+  std::vector<metal_gpu_kernels::VgicpVoxelTable> tables;
   tables.reserve(clamped_levels);
   for (int level = clamped_levels - 1; level >= 0; --level) {
     const double level_voxel_size =
@@ -164,10 +164,10 @@ BaseGaussians extractBaseGaussians(
 
 MetalVgicpRegistration::MetalVgicpRegistration(const Config & config)
 : config_(config),
-  engine_(std::make_shared<gpu::MetalVgicpEngine>()),
+  engine_(std::make_shared<metal_gpu_kernels::MetalVgicpEngine>()),
   covariance_engine_(
     config.use_gpu_source_covariance
-      ? std::make_shared<gpu::MetalCovarianceEngine>()
+      ? std::make_shared<metal_gpu_kernels::MetalCovarianceEngine>()
       : nullptr)
 {
   // engine_ / covariance_engine_ の ctor で device/PSO を 1 回構築する
@@ -176,7 +176,7 @@ MetalVgicpRegistration::MetalVgicpRegistration(const Config & config)
 
 bool MetalVgicpRegistration::isAvailable()
 {
-#ifdef PYLOT_LIO_HAS_METAL
+#ifdef METAL_GPU_KERNELS_HAS_METAL
   return true;
 #else
   return false;
@@ -202,7 +202,7 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
   // (グリッド kNN) に自動フォールバックする。 false なら従来の PCL KdTree を使う。
   std::vector<Eigen::Matrix3d> source_covariances;
   if (config_.use_gpu_source_covariance && covariance_engine_) {
-    gpu::CovarianceEstimateConfig cov_config;
+    metal_gpu_kernels::CovarianceEstimateConfig cov_config;
     cov_config.num_neighbors = config_.source_covariance_num_neighbors;
     cov_config.plane_epsilon =
       static_cast<float>(config_.source_covariance_plane_epsilon);
@@ -234,7 +234,7 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
   }
 
   // 多重解像度テーブルを「粗→細」で構築 (levels=1 なら単一解像度)。
-  const std::vector<gpu::VgicpVoxelTable> level_tables =
+  const std::vector<metal_gpu_kernels::VgicpVoxelTable> level_tables =
     buildMultiResolutionTables(
       base.voxels, base.base_voxel_size, config_.voxelmap_levels,
       config_.voxelmap_scaling_factor, base.eigen_floor);
@@ -287,7 +287,7 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
   Eigen::Isometry3d current = initial_transform_world_body;
   // 粗→細の各レベルで GN を回し、 transform を次レベルに引き継ぐ。
   for (std::size_t level = 0; level < level_tables.size(); ++level) {
-    const gpu::VgicpVoxelTable & table = level_tables[level];
+    const metal_gpu_kernels::VgicpVoxelTable & table = level_tables[level];
     if (table.capacity <= 0) {
       continue;
     }
@@ -295,7 +295,7 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
       engine_->setTarget(table);
     }
 
-    gpu::VgicpLinearizeConfig lin_config;
+    metal_gpu_kernels::VgicpLinearizeConfig lin_config;
     lin_config.huber_threshold = static_cast<float>(config_.huber_threshold);
     // 対応ゲートはレベルのボクセルサイズ比で広げる (粗レベルは mean が遠いため)。
     const double level_scale = table.voxel_size_m / base_voxel_size;
@@ -305,9 +305,9 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
 
     bool level_converged = false;
     for (int iteration = 0; iteration < config_.max_iterations; ++iteration) {
-      const gpu::VgicpLinearization lin = use_gpu
+      const metal_gpu_kernels::VgicpLinearization lin = use_gpu
         ? engine_->linearize(current, lin_config)
-        : gpu::linearizeVgicpCpu(
+        : metal_gpu_kernels::linearizeVgicpCpu(
             source_points, source_covariances, table, current, lin_config);
 
       if (use_gpu && !lin.gpu_used) {

@@ -7,7 +7,7 @@
 #include <random>
 #include <string>
 
-#include "pylot_lio/gpu/metal_voxel_downsampler.hpp"
+#include "metal_gpu_kernels/metal_voxel_downsampler.hpp"
 #include "pylot_lio/preprocess/i_preprocessor.hpp"
 
 namespace pylot_lio
@@ -55,7 +55,7 @@ private:
   std::mt19937 random_engine_;
   // GPU リソース (device/PSO) を process 間で使い回す永続エンジン。 use_gpu=false や
   // Metal 無効ビルドでは nullptr / isValid()=false。
-  std::shared_ptr<gpu::MetalVoxelDownsampler> downsampler_;
+  std::shared_ptr<metal_gpu_kernels::MetalVoxelDownsampler> downsampler_;
 };
 
 }  // namespace pylot_lio

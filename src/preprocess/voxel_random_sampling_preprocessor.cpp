@@ -15,7 +15,7 @@ VoxelRandomSamplingPreprocessor::VoxelRandomSamplingPreprocessor(const Config & 
   random_engine_(
     config.random_seed != 0u ? config.random_seed : std::random_device{}()),
   downsampler_(
-    config.use_gpu ? std::make_shared<gpu::MetalVoxelDownsampler>() : nullptr)
+    config.use_gpu ? std::make_shared<metal_gpu_kernels::MetalVoxelDownsampler>() : nullptr)
 {
 }
 
@@ -40,7 +40,7 @@ PointCloudPtr VoxelRandomSamplingPreprocessor::process(
   }
 
   // seed=0 はマシン乱数。 GPU/CPU で決定的にするため呼び出し側で 1 回解決して渡す。
-  gpu::VoxelDownsampleConfig downsample_config;
+  metal_gpu_kernels::VoxelDownsampleConfig downsample_config;
   downsample_config.voxel_size_m = static_cast<float>(config_.voxel_size_m);
   downsample_config.sampling_rate = static_cast<float>(config_.sampling_rate);
   downsample_config.random_seed =
@@ -53,7 +53,7 @@ PointCloudPtr VoxelRandomSamplingPreprocessor::process(
   const std::vector<std::int32_t> selected =
     (config_.use_gpu && downsampler_)
       ? downsampler_->downsample(points, downsample_config).selected_indices
-      : gpu::voxelRandomDownsampleGridCpu(points, downsample_config);
+      : metal_gpu_kernels::voxelRandomDownsampleGridCpu(points, downsample_config);
 
   output_cloud->points.reserve(selected.size());
   for (const std::int32_t index : selected) {
