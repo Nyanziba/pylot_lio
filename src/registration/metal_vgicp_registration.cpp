@@ -257,6 +257,7 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
 
   // 地面 leveling 拘束用の地面法線 (body) を初期姿勢で 1 回だけ推定する。
   // 平面性・傾きゲートを満たさなければ nullopt (= この scan は拘束を使わない)。
+  // 振動ゲート: 前フレームの法線 (body) から大きく変化したら拘束をスキップ。
   std::optional<Eigen::Vector3d> ground_normal_body;
   if (config_.enable_ground_constraint) {
     GroundConstraintConfig ground_config;
@@ -266,10 +267,6 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
       source_points, initial_transform_world_body, ground_config);
     ground_normal_body = fresh_normal;
 
-    // 振動ゲート: 前フレームの法線 (body) から大きく変化したら車体ピッチ振動中とみなし、
-    // 拘束をスキップ (= nullopt にする)。 凸凹路面で水平化が物理運動に逆らって SLAM を
-    // 破綻させるのを防ぐ。 previous_ground_normal_body_ は振動中でも最新値で更新するので、
-    // 振動が収まった次のフレームで滑らかに復帰する。
     if (ground_normal_body && previous_ground_normal_body_ &&
         config_.ground_vibration_threshold_deg > 0.0)
     {
@@ -282,8 +279,6 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
       }
     }
 
-    // 拘束を使う/使わないに関わらず、 推定できた法線は次回比較のため保存する
-    // (推定不能 nullopt のフレームは前回値を保つ)。
     if (fresh_normal) {
       previous_ground_normal_body_ = fresh_normal;
     }
@@ -343,7 +338,6 @@ MetalVgicpRegistration::AlignResult MetalVgicpRegistration::align(
           hessian, gradient, current, *ground_normal_body, ground_weight,
           max_correction_rad);
       }
-
       const Eigen::Matrix<double, 6, 1> delta = hessian.ldlt().solve(gradient);
       const Eigen::Vector3d delta_rotation = delta.head<3>();
       const Eigen::Vector3d delta_translation = delta.tail<3>();

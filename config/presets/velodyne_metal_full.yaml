@@ -45,6 +45,8 @@ pylot_lio:
     voxel_grid_size_m: 0.4
     # rate=1.0: 全点保持 (Velodyne は密なので GPU registration を最大限働かせる)。
     # 重い・落としたい場合は 0.3〜0.5 に下げると出力点数が比例して減る。
+    # ★ 0.5 だと対応点が半減して registration が不安定化する。 Velodyne は GPU で
+    #    余裕があるので 1.0 推奨。
     voxel_random_sampling_rate: 0.5
     voxel_random_sampling_use_gpu: true
     voxel_random_sampling_seed: 12345
