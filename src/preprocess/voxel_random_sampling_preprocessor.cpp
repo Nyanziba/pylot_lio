@@ -1,49 +1,21 @@
 // Copyright 2026 PyLoT Robotics. Licensed under the Apache License, Version 2.0.
 #include "pylot_lio/preprocess/voxel_random_sampling_preprocessor.hpp"
 
-#include <cmath>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <random>
 #include <sstream>
-#include <unordered_map>
 #include <vector>
 
 namespace pylot_lio
 {
 
-namespace
-{
-
-struct VoxelKey
-{
-  int64_t x;
-  int64_t y;
-  int64_t z;
-  bool operator==(const VoxelKey & other) const noexcept
-  {
-    return x == other.x && y == other.y && z == other.z;
-  }
-};
-
-struct VoxelKeyHash
-{
-  std::size_t operator()(const VoxelKey & key) const noexcept
-  {
-    const auto h1 = std::hash<int64_t>{}(key.x);
-    const auto h2 = std::hash<int64_t>{}(key.y);
-    const auto h3 = std::hash<int64_t>{}(key.z);
-    return h1 ^ (h2 * 0x9E3779B97F4A7C15ULL) ^ (h3 * 0xBF58476D1CE4E5B9ULL);
-  }
-};
-
-}  // namespace
-
 VoxelRandomSamplingPreprocessor::VoxelRandomSamplingPreprocessor(const Config & config)
 : config_(config),
   random_engine_(
-    config.random_seed != 0u ? config.random_seed : std::random_device{}())
+    config.random_seed != 0u ? config.random_seed : std::random_device{}()),
+  downsampler_(
+    config.use_gpu ? std::make_shared<gpu::MetalVoxelDownsampler>() : nullptr)
 {
 }
 
@@ -58,42 +30,34 @@ PointCloudPtr VoxelRandomSamplingPreprocessor::process(
     return output_cloud;
   }
 
-  // 各 voxel に「観測した点の index 配列」を持たせる。 全部メモリに保持して最後に
-  // 各 voxel から 1 つだけ選ぶ方式。 voxel あたり 数〜数十点が普通なのでメモリは軽い。
-  std::unordered_map<VoxelKey, std::vector<std::size_t>, VoxelKeyHash>
-    indices_per_voxel;
-  indices_per_voxel.reserve(input_cloud->points.size() / 4 + 1);
-
-  const double inverse_voxel_size = 1.0 / config_.voxel_size_m;
-  for (std::size_t point_index = 0; point_index < input_cloud->points.size();
-       ++point_index)
-  {
-    const Point & input_point = input_cloud->points[point_index];
-    if (!std::isfinite(input_point.x) || !std::isfinite(input_point.y) ||
-        !std::isfinite(input_point.z))
-    {
-      continue;
-    }
-    const VoxelKey key{
-      static_cast<int64_t>(std::floor(input_point.x * inverse_voxel_size)),
-      static_cast<int64_t>(std::floor(input_point.y * inverse_voxel_size)),
-      static_cast<int64_t>(std::floor(input_point.z * inverse_voxel_size))
-    };
-    indices_per_voxel[key].push_back(point_index);
+  // 入力点を Vector3d 配列に変換 (非有限点も並びを保つ。 ダウンサンプラ側でセルに
+  // 割り当てられず選択対象から外れる)。 index ベースで返るので元の Point の全フィールド
+  // (intensity 等) を保ったままコピーできる。
+  std::vector<Eigen::Vector3d> points;
+  points.reserve(input_cloud->points.size());
+  for (const Point & input_point : input_cloud->points) {
+    points.emplace_back(input_point.x, input_point.y, input_point.z);
   }
 
-  output_cloud->points.reserve(indices_per_voxel.size());
-  for (auto & [key, indices_in_voxel] : indices_per_voxel) {
-    (void)key;
-    if (indices_in_voxel.empty()) {
-      continue;
-    }
-    // 元々の点から 1 つランダムに選ぶ (= voxel 内の代表点)。
-    std::uniform_int_distribution<std::size_t> distribution(
-      0, indices_in_voxel.size() - 1);
-    const std::size_t selected_index =
-      indices_in_voxel[distribution(random_engine_)];
-    output_cloud->points.push_back(input_cloud->points[selected_index]);
+  // seed=0 はマシン乱数。 GPU/CPU で決定的にするため呼び出し側で 1 回解決して渡す。
+  gpu::VoxelDownsampleConfig downsample_config;
+  downsample_config.voxel_size_m = static_cast<float>(config_.voxel_size_m);
+  downsample_config.sampling_rate = static_cast<float>(config_.sampling_rate);
+  downsample_config.random_seed =
+    config_.random_seed != 0u
+      ? config_.random_seed
+      : static_cast<std::uint32_t>(random_engine_());
+
+  // use_gpu なら Metal で間引く (GPU 無効ビルド / デバイス無では engine が CPU に
+  // 自動フォールバック)。 use_gpu=false のときは直接 CPU 参照を呼ぶ。
+  const std::vector<std::int32_t> selected =
+    (config_.use_gpu && downsampler_)
+      ? downsampler_->downsample(points, downsample_config).selected_indices
+      : gpu::voxelRandomDownsampleGridCpu(points, downsample_config);
+
+  output_cloud->points.reserve(selected.size());
+  for (const std::int32_t index : selected) {
+    output_cloud->points.push_back(input_cloud->points[static_cast<std::size_t>(index)]);
   }
   output_cloud->width = static_cast<uint32_t>(output_cloud->points.size());
   output_cloud->height = 1;
@@ -104,8 +68,11 @@ PointCloudPtr VoxelRandomSamplingPreprocessor::process(
 std::string VoxelRandomSamplingPreprocessor::describe() const
 {
   std::ostringstream oss;
+  const bool gpu_active = config_.use_gpu && downsampler_ && downsampler_->isValid();
   oss << "voxel_random_sampling:size=" << config_.voxel_size_m
-      << ",seed=" << config_.random_seed;
+      << ",rate=" << config_.sampling_rate
+      << ",seed=" << config_.random_seed
+      << ",backend=" << (gpu_active ? "metal_gpu" : "cpu");
   return oss.str();
 }
 

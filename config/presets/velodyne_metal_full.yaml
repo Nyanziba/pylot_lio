@@ -1,0 +1,234 @@
+# Preset: Velodyne + xsens IMU 風 rosbag 向け「GPU 全部のせ」。
+# velodyne_xsens の Velodyne チューニング (submap + loop closure + PGO + PCD 保存) に、
+# mid360_metal_full と同じ GPU パイプライン (ダウンサンプリング + source 共分散 +
+# registration 線形化を Metal にオフロード) を載せたもの。
+#
+# 使用例:
+#   ros2 launch pylot_lio lio.launch.py \
+#       preset:=velodyne_metal_full \
+#       input_cloud_topic:=/velodyne_points \
+#       input_imu_topic:=/imu/data
+#
+# velodyne_xsens との違い:
+#   - registration を plain_gicp → "metal_vgicp" に変更し、 GPU を常用 (gpu_min_points: 0)。
+#   - 前処理 (ダウンサンプリング + source 共分散) も Metal GPU 化。
+#   - map は voxel_keyframe_submap のまま。 metal_vgicp はマップ非依存になったので、
+#     submap の sliding window 点群を毎フレーム map_voxel_size_m でボクセル化してガウス分布を
+#     作り GPU registration の target にする。 loop closure / PGO / PCD フル保存は維持される。
+#
+# 持続スループットの注意:
+#   registration target は submap の sliding window (直近 N キーフレーム) なので、 マップが
+#   いくら育っても 1 フレームあたりの target サイズは概ね一定に保たれる。 これは voxel_map
+#   (累積セルが増え続け、 毎フレームの voxel 表構築コストが増大する) より持続的に速い。
+#
+# 制約: GPU は fp32。 ダウンサンプリングは整数演算なので GPU=CPU 完全一致、 共分散・
+# registration は CPU(fp64) と mm/mrad オーダー一致 (ビット一致はしない)。
+pylot_lio:
+  ros__parameters:
+    # I/O format。 Velodyne driver は sensor_msgs/PointCloud2 を出す。
+    input_cloud_format: "pointcloud2"
+
+    # ---- Motion deskew (スキャン歪み補正) ----
+    # 車載・高速走行では 1 スキャン (Velodyne 10Hz=0.1s) の間にセンサが ~1.4m 動き、
+    # 点群が歪んで registration が発散しやすい。 等速度モデルで各点を「スキャン終端の
+    # body フレーム」に補正する (IMU 不要、 extrinsic 不要)。
+    # deskew_time_field は Velodyne の per-point 時刻フィールド名 (通常 "time")。
+    # bag のフィールド名が違う場合は `ros2 topic echo <cloud> --field fields` で確認して変更。
+    # ★ false にすると deskew をスキップして生スキャンをそのまま使う。 歩行速度 ~1m/s では
+    #    1 スキャン (0.1s) で 10cm しか動かず、 むしろ CV 予測ずれによる deskew 誤補正が
+    #    害になる場合がある。 歪みが少ない低速ロボットでは OFF が安全。
+    enable_deskew: false
+    deskew_time_field: "time"
+
+    # ---- 前処理: GPU voxel random sampling ----
+    preprocessor: "voxel_random_sampling"
+    voxel_grid_size_m: 0.4
+    # rate=1.0: 全点保持 (Velodyne は密なので GPU registration を最大限働かせる)。
+    # 重い・落としたい場合は 0.3〜0.5 に下げると出力点数が比例して減る。
+    voxel_random_sampling_rate: 0.5
+    voxel_random_sampling_use_gpu: true
+    voxel_random_sampling_seed: 12345
+
+    # ---- マップ: voxel_keyframe_submap (loop closure / PGO / PCD の母体) ----
+    # metal_vgicp は submap の toPointCloud() (sliding window の生点群) を
+    # map_voxel_size_m でボクセル化してガウス分布を作り target にする。
+    map: "voxel_keyframe_submap"
+    map_voxel_size_m: 0.4
+    map_min_points_per_cell: 1
+    map_max_total_cells: 3000000
+
+    # ---- submap sliding window / 確定 submap のチューニング ----
+    # registration target は「直近 submap_window_size 個のキーフレーム」 の点群。 これが
+    # 1 フレームあたりの処理コストを決める (大きいほど target が増えて重く・正確に、
+    # 小さいほど軽く・局所的に)。 マップ全体が育っても target はここで一定に保たれるので、
+    # 持続スループットが安定する。
+    # ★ 地面お椀化 (ピッチドリフト) 対策の主レバー: window を大きくすると遠方地面が厚く
+    #    積もって voxel あたりの点が増え、 平面法線が立つ → ピッチが拘束されお椀化が減る。
+    #    5 のように小さいと遠方地面が疎で法線が潰れ、 ピッチが逃げやすい。 重さとの
+    #    トレードオフ。 まず 15 で様子を見る (重ければ 10、 まだ反れば 20 へ)。
+    submap_window_size: 2
+    # M 個キーフレームごとに 1 個の「確定 submap」スナップショットを内部保存する
+    # (loop closure / PGO / PCD フルマップの母体)。 window と揃えるのが無難。
+    submap_finalize_size: 2
+    # セル内 1 点だけ保持 → メモリ / PCD サイズ激減 (Velodyne の遠距離点に有効)。
+    # "keep_up_to_n" にすると submap_max_points_per_cell 点まで保持し target が密になる
+    # (registration はやや正確になるがメモリ・処理コスト増)。
+    submap_cell_sampling_mode: "keep_up_to_n"
+    # cell_sampling_mode="keep_up_to_n" のときセル内に保持する最大点数。
+    # "random_one" では事実上 1 (このパラメータは無視に近い)。
+    submap_max_points_per_cell: 32
+    # 各セルの共分散推定に使う近傍点数 (target ガウス分布の形を決める)。
+    submap_k_nearest_for_covariance: 8
+    # random_one モードのセル内 1 点選択に使う乱数 seed (0 でマシン乱数)。
+    submap_random_seed: 12345
+
+    # ---- registration: Metal GPU VGICP ----
+    registration: "metal_vgicp"
+    registration_max_iterations: 100
+    registration_max_correspondence_m: 1.0
+    registration_convergence_translation_m: 0.0001
+    registration_convergence_rotation_rad: 0.0001
+    registration_huber_threshold: 1.0
+    registration_source_covariance_num_neighbors: 10
+    registration_source_covariance_plane_epsilon: 0.001
+
+    # ---- 前処理 (source 共分散推定) の GPU 化 ----
+    registration_metal_gpu_source_covariance: true
+    # Velodyne は voxel 0.4 / 遠距離疎なので近傍探索セルを少し大きめに。
+    registration_metal_source_covariance_cell_size_m: 0.6
+
+    # ---- GPU / CPU 切替: 常に GPU ----
+    registration_metal_gpu_min_points: 20000
+
+    # ---- 多重解像度 (coarse-to-fine) VGICP ----
+    registration_metal_voxelmap_levels: 1
+    registration_metal_voxelmap_scaling_factor: 2.0
+
+    # ---- 地面平面 leveling 拘束 (damped 版、 IMU 重力なしのピッチドリフト/お椀化対策) ----
+    # 各スキャンで支配的地面の法線を world-up (0,0,1) に合わせ、 ロール/ピッチを少しずつ
+    # 水平へ寄せる。 デスキューで発散ジャンプが消えたので、 残るお椀化をこれで抑える。
+    # ★ hard 版は等速度モデルと干渉して振動・ジャンプしたため、 1 align の補正量を
+    #    max_correction_per_frame_deg で上限クランプした damped 版を使う (振動しない)。
+    registration_metal_enable_ground_constraint: true
+    # 拘束の強さ。 VGICP の回転剛性に対する比。 damping があるので強めでも急スナップしない。
+    registration_metal_ground_constraint_weight: 1.0
+    # 最低 world z からこの高さ [m] までを地面候補として法線推定する。
+    registration_metal_ground_band_m: 0.5
+    # 推定法線が (0,0,1) からこの角度を超えて傾く scan は地面とみなさない (壁・坂を弾く)。
+    # damped 版では誤検出の影響もクランプで抑えられるが、 ゲートも厳しめにして二重に守る。
+    # ★ 歩行速度ロボット (~1m/s) は車体が物理的に大きく傾くことは少ない。 ログで観測された
+    #    ground_tilt=8〜9° は registration 誤対応で姿勢が崩れた結果。 その状態で地面拘束を
+    #    発火させると GN をさらに逆方向へ引いて連鎖 JUMP を悪化させる。 5° に絞って
+    #    「ほぼ水平な確実な地面」 だけ拘束対象にする。
+    registration_metal_ground_max_tilt_deg: 5.0
+    # ★ damping: 1 align で加える leveling 補正の上限 [deg]。 これが振動防止の要。
+    # お椀化はゆっくり積もるので 1°/frame (10Hz=10°/s) で十分追いつく。 効きが弱ければ
+    # 1.5〜2.0 へ、 まだ揺れるなら 0.5 へ。
+    registration_metal_ground_max_correction_per_frame_deg: 1.0
+    # ★ 振動ゲート: 前フレームの地面法線 (body) から角度差がこれ [deg] を超えるフレームは
+    # 「車体ピッチ振動中」 とみなして拘束をスキップ。 凸凹路面で物理的に車体が振動する区間
+    # では、 水平化が物理運動に逆らって SLAM を破綻させていた。 お椀化ドリフトはゆっくり
+    # 積もるので連続フレーム間の法線変化はごく小さく、 このゲートに引っかからない。
+    # 振動 (>= 数°/frame) だけ自動 OFF。 厳しすぎて拘束が効かない場合は 5〜10 へ、
+    # 凸凸でも破綻するなら 1〜2 へ。 0 で振動ゲート無効 (常時拘束)。
+    registration_metal_ground_vibration_threshold_deg: 2.0
+
+    # ---- オフライン rosbag リーダの進捗ログ ----
+    rosbag_progress_log_interval_clouds: 100
+
+    # 状態推定。 IMU 校正未済 (extrinsic identity) の段階では gicp_only が安定。
+    # 校正後に "ieskf" に切り替えるのが推奨フロー。
+    state_estimator: "gicp_only"
+
+    # ---- registration rejection (gicp_only 専用フォールバック) ----
+    # 局所的に LiDAR の対応が取れない場面 (開けた場所・動的物体・geometric degeneracy) で
+    # 1 frame の誤登録が pose を 2-3m 飛ばし、 以降の registration を連鎖的に壊す問題への対策。
+    # 「物理的にあり得ない補正量」 を検出して、 その frame は CV 予測 pose を採用し、
+    # map / keyframe 追加もスキップする。
+    gicp_only_rejection_enabled: true
+    # 歩行ロボット (~1m/s) で 1 scan (0.1s) の物理上限は 0.1m。 余裕を見て 0.5m。
+    # これより大きい trans 補正は誤対応として reject。
+    gicp_only_max_translation_correction_m: 0.5
+    # 急旋回でも 1 scan 10° 未満。 30° は明らかな破綻。
+    gicp_only_max_rotation_correction_deg: 30.0
+    # 未収束 (iter=100 で converged=0) かつ対応点数が通常 (~25000) の半分以下なら破綻。
+    gicp_only_min_correspondences_when_unconverged: 15000
+
+    # xsens IMU は ROS 規約通り m/s²。 Mid-360 の g 単位スケールは適用しない。
+    imu_acceleration_scale: 1.0
+    gravity_norm: 9.80665
+
+    # ============================================================
+    # LiDAR ↔ IMU extrinsic — この preset は state_estimator: gicp_only なので IMU を
+    # 一切使わず、 extrinsic は現状「休眠」 (registration にも pose にも効かない)。
+    # IMU↔LiDAR の取り付けが未知のため identity 仮置き + extrinsic_source: "config" に
+    # しておく ("tf" だと存在しない TF を毎回引きにいって起動時 WARN が出るため)。
+    # 将来 extrinsic を較正して "ieskf" に切り替えるときに、 ここへ実測の T_imu_lidar を
+    # 入れて extrinsic_source を "config" のまま使う (または "tf" + 実フレーム名)。
+    # ============================================================
+    extrinsic_source: "config"
+    extrinsic_tf_lookup_timeout_s: 2.0
+    lidar_frame_id: "velodyne"
+    imu_frame_id: "imu_link"
+    extrinsic_translation_imu_from_lidar_x: 0.0
+    extrinsic_translation_imu_from_lidar_y: 0.0
+    extrinsic_translation_imu_from_lidar_z: 0.0
+    extrinsic_rotation_imu_from_lidar_row_major: [1.0, 0.0, 0.0,
+                                                  0.0, 1.0, 0.0,
+                                                  0.0, 0.0, 1.0]
+
+    # ---- Keyframe。 Velodyne は遠距離まで見えるので間隔を少し広げて map を軽くする。
+    # ★ 歩行速度 (~1m/s) では keyframe 間隔が広すぎると PGO が発火しても拘束が少なく
+    #    yaw ドリフトを矯正しきれない (壁の二重化)。 1.5m なら歩行 1.5 秒に 1 個できて
+    #    PGO 10 kf ごと = 15 秒ごとに補正できる。 メモリ・PCD サイズは増えるが、
+    #    歩行 bag (~数分) なら問題にならない。
+    keyframe_min_translation_m: 1.5
+    keyframe_min_rotation_rad: 0.2
+
+    # ---- Loop closure (Scan Context)。 Velodyne の有効距離に合わせて max_radius を拡大。
+    # ★ ジャンプ切り分けのため一時的に OFF。 これでジャンプが消えれば「誤ループ閉じ込み +
+    #    PGO の飛び」 が原因。 切り分け後、 誤検出が出ないよう loop_score_threshold を下げる
+    #    (例 0.05) / loop_icp_max_fitness_score を厳しくする等して再度 true に戻す。
+    # ★ 切り分け実験: registration の CV log が良好 (trans<0.1m) なのに PCD map がずれる
+    #    → PGO/submap 更新側を疑い、 一時的に loop と PGO を両方 OFF にする。
+    #    OFF でマップが綺麗 → PGO/submap 更新が真因。 ON に戻すときは段階的に再開する。
+    enable_loop_detection: false
+    loop_num_rings: 60
+    loop_num_sectors: 20
+    loop_max_radius_m: 100.0
+    loop_min_radius_m: 0.5
+    # ★ 0.05 → 0.15: Scan Context distance (低いほど一致度高い) の閾値を厳しく。
+    #    歩行で 100m 以上離れた場所を「同じ」 と誤判定する誤検出が起きていたため、
+    #    一致度がより高い候補だけを通す
+    loop_score_threshold: 0.15
+    # 20 → 30: 直近 keyframe 数を増やして誤検出を防ぐ
+    loop_exclude_recent_kf: 30
+    # 20 → 10: 候補数を絞って評価時間短縮 + 誤検出減らす
+    loop_ring_key_top_k: 10
+
+    # Loop ICP のゲート。
+    # ★ 誤検出 loop による 46m テレポート (kf249 (101.8,30.7,1.95) → kf259 (55.8,28.4,4.24))
+    #    を観測したため、 歩行ロボットの物理的制約に合わせて全項目を大幅に厳しく。
+    loop_icp_voxel_size_m: 0.3
+    # 1.0 → 0.5: ループ ICP の対応も厳しく。 真のループならズレは小さいはず
+    loop_icp_max_correspondence_m: 0.5
+    # 2.0 → 0.5: fitness が小さいほど一致度高い。 真のループだけ通す
+    loop_icp_max_fitness_score: 0.5
+    # 10.0 → 2.0: 歩行ロボット (1m/s) で 2m 以上のジャンプは ほぼ確実に誤検出
+    loop_icp_max_translation_jump_m: 2.0
+    # 0 → 5: 連続発火を防ぐクールダウン (誤検出の波及を抑える)
+    loop_match_cooldown_keyframes: 5
+
+    # ---- PGO。
+    # ★ keyframe を 1.5m に詰めたので PGO 発火を 10 → 5 kf に頻繁化。
+    #    歩行 7.5 秒 / ~7.5m ごとに pose graph を最適化することで yaw 累積を早期補正。
+    # ★ 切り分け実験のため一時的に OFF。 loop_detection と一緒に戻す。
+    enable_pose_graph_optimization: false
+    pgo_optimize_every_n_keyframes: 5
+
+    # ---- PCD 自動保存 (submap の map 全体)。 不要なら false。
+    enable_pcd_auto_save: true
+    output_pcd_path: "/tmp/pylot_lio_velodyne_metal_full_map.pcd"
+    output_pcd_binary: true
+
+    enable_loop_diag: false

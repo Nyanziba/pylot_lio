@@ -39,23 +39,34 @@ ros2 bag play /path/to/mid360_loop.bag
 | `plain_gicp_openmp` | GICP-only | plain GICP (**OpenMP**) | VoxelMap | 外部依存ゼロ + マルチスレッド |
 | `plain_gicp_tbb` | GICP-only | plain GICP (**Intel TBB**) | VoxelMap | TBB 並列 (omp と公平比較用) |
 | `metal_vgicp` | GICP-only | **Metal GPU VGICP** | VoxelMap | Apple GPU。大規模点群で高速 |
+| `mid360_metal_full` | GICP-only | **Metal GPU 全部のせ** | VoxelMap | Mid-360 で前処理〜registration を全部 GPU |
+| `velodyne_metal_full` | GICP-only | **Metal GPU 全部のせ** | VoxelMap | Velodyne で前処理〜registration を全部 GPU |
 | `velodyne_xsens` | GICP-only | small_gicp GICP | VoxelKeyframeSubmap | Velodyne + xsens rosbag 向け |
 
 すべて `config/mid360.yaml` に既定値があり、preset YAML が個別パラメータを上書きします。
 
 ### Apple Metal GPU バックエンド (`metal_vgicp`)
 
-`glim` / `gtsam_points` の GaussianVoxelMap + VGICP を Metal (metal-cpp) に移植したもの。各 Gauss-Newton 反復の正規方程式 (H, b) 構築を GPU にオフロードします。
+`glim` / `gtsam_points` の GaussianVoxelMap + VGICP を Metal (metal-cpp) に移植したもの。**前処理 (source 共分散推定) と各 Gauss-Newton 反復の正規方程式 (H, b) 構築の両方**を GPU にオフロードします。
 
-- **map は `voxel_map` 必須** (ボクセルガウス分布を GPU へ転送するため)。
+- **どのマップでも使えます** (マップ非依存)。`voxel_map` / `normal_map` は保存済みのボクセルガウス分布を直接、`voxel_random_map` / `voxel_keyframe_submap` / `kd_tree_map` は `toPointCloud()` の生点群を `map_voxel_size_m` でボクセル化してガウス分布を復元し GPU へ送ります。`voxel_keyframe_submap` を選べば **loop closure / PGO / PCD フル保存を維持したまま GPU registration** が使えます。
 - fp32 精度 (Apple GPU は fp64 不可) ですが、CPU 版 (fp64) と **mm / mrad オーダーで一致**。
-- 点数に応じ CPU/GPU を自動選択 (`registration_metal_gpu_min_points`、既定 5万点)。`metal_vgicp.yaml` は GPU-only (`0`)。
-- Apple M4 ベンチ (align end-to-end): 5万点 2.6x / 20万点 2.9x 高速 (vs 逐次 plain_gicp)。小規模 (~2万点) は起動オーバヘッドで CPU 有利。
-- Metal 非対応ビルドでは自動的に `plain_gicp` にフォールバック。
+- **前処理 GPU 化** (`registration_metal_gpu_source_covariance`、既定 `true`): 生点群の k 近傍探索 + 平面正則化を Metal で実行 (これまで CPU の PCL KdTree が担っていた最大のボトルネック)。近傍探索は KdTree ではなく空間ハッシュグリッド (glim と同じ妥協)。平面正則化は固有値分解を避け、最小固有値方向の法線 `n` だけを closed-form で求め `I−(1−ε)nnᵀ` を組む。Apple M4 ベンチ: **2万点 5.1x / 9万点 8.2x / 41万点 11.6x 高速** (vs 逐次 CPU)。
+- registration の線形化: 点数に応じ CPU/GPU を自動選択 (`registration_metal_gpu_min_points`、既定 5万点)。`metal_vgicp.yaml` は GPU-only (`0`)。
+- Apple M4 ベンチ (align end-to-end): 5万点 2.6x / 20万点 2.9x 高速 (vs 逐次 plain_gicp)。
+- Metal 非対応ビルド / デバイス無では自動的に CPU (前処理はグリッド kNN、registration は `plain_gicp`) にフォールバック。
 
 ```bash
 ros2 launch pylot_lio lio.launch.py preset:=metal_vgicp
 ```
+
+### Metal GPU ボクセルダウンサンプリング (`voxel_random_sampling`)
+
+前処理レイヤーの `voxel_random_sampling` も Metal GPU で高速化できます (GLIM の randomgrid downsampling 相当)。
+
+- **サンプリング率 0〜1** (`voxel_random_sampling_rate`): 各ボクセルから `m = max(1, round(点数 × rate))` 点を保持。`0` で従来の「各ボクセル 1 点」(後方互換)、`1` で全点。空間的に均一に間引きつつ密集ボクセルほど多く残せます。
+- **GPU 化** (`voxel_random_sampling_use_gpu`、既定 `true`): ボクセル振り分け + reservoir sampling を Metal で実行。出力点数が可変なので、各ボクセルの保持数の prefix sum で出力位置を確定させ、各 GPU スレッドが衝突なく書き込みます。
+- 整数演算 (reservoir + xorshift32) のみなので **GPU と CPU の結果は完全一致** (fp 誤差なし)。GPU 無効ビルド / デバイス無では同じグリッド方式を CPU で実行。
 
 ## オフライン rosbag 処理 (高速・取りこぼしなし)
 
@@ -161,7 +172,7 @@ macOS arm64 + pixi (robostack) 環境では `activate_pixi_env.sh` の手順を�
 cbt pylot_lio
 ```
 
-純ロジックの単体テスト (Lie 代数、各前処理 / マップ、IESKF、GICP-only、Factory、plain_gicp 縮退正則化、Scan Context、PGO、Livox 変換、Metal compute プローブ・VGICP 線形化・registration など)。ROS ノードは起動しないので CI で安全に流せます。Metal 対応ビルドでは GPU=CPU の数値一致や GPU-only/CPU フォールバックも検証します (Metal 無しビルドでは該当テストはスタブ)。
+純ロジックの単体テスト (Lie 代数、各前処理 / マップ、IESKF、GICP-only、Factory、plain_gicp 縮退正則化、Scan Context、PGO、Livox 変換、Metal compute プローブ・VGICP 線形化・registration・source 共分散推定・voxel ダウンサンプリング など)。ROS ノードは起動しないので CI で安全に流せます。Metal 対応ビルドでは GPU=CPU の数値一致や GPU-only/CPU フォールバックも検証します (Metal 無しビルドでは該当テストはスタブ)。
 
 ## 参考にしたもの
 

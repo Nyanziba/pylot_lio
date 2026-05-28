@@ -12,7 +12,10 @@
 
 #include <Eigen/Geometry>
 
+#include "pylot_lio/map/normal_map.hpp"
+#include "pylot_lio/map/voxel_keyframe_submap_map.hpp"
 #include "pylot_lio/map/voxel_map.hpp"
+#include "pylot_lio/map/voxel_random_map.hpp"
 #include "pylot_lio/registration/metal_vgicp_registration.hpp"
 #include "pylot_lio/registration/plain_gicp_registration.hpp"
 
@@ -277,18 +280,81 @@ TEST(MetalVgicpRegistration, SmallCloudUsesCpuPathAndConverges)
   EXPECT_LT(translation_error.norm(), 0.02);
 }
 
-TEST(MetalVgicpRegistration, NonVoxelMapReturnsNotConverged)
+TEST(MetalVgicpRegistration, EmptyMapReturnsNotConverged)
 {
-  // VoxelMap 以外のマップでは converged=false (Step2 制約)。 kd_tree_map で確認。
-  // ここでは簡便に VoxelMap を使わず、 空の source を渡しても落ちないことを見る代用とし、
-  // 実際の非 VoxelMap 判定は align 内 dynamic_cast に委ねる (ビルド時型で担保)。
+  // 空マップ → ガウス 0 個 → converged=false (どのマップ型でも)。
   VoxelMap::Config map_config;
   VoxelMap map(map_config);  // 空マップ
   MetalVgicpRegistration registration(MetalVgicpRegistration::Config{});
   PointCloud empty_source;
   const auto result = registration.align(empty_source, map, Eigen::Isometry3d::Identity());
-  // 空マップ → voxel table capacity<=0 → converged=false。
   EXPECT_FALSE(result.converged);
+}
+
+namespace
+{
+
+// 既知 perturbation で target をずらした source を metal_vgicp で align し、 真値
+// (perturbation) に収束するか確認する共通ヘルパ。 マップ型非依存 (IPointCloudMap&)。
+void expectConvergesAgainstMap(IPointCloudMap & map, double target_voxel_size_m)
+{
+  const PointCloud target = makeStructuredCloud();
+  map.insertScan(target, Eigen::Isometry3d::Identity());
+
+  Eigen::Isometry3d perturbation = Eigen::Isometry3d::Identity();
+  perturbation.linear() =
+    Eigen::AngleAxisd(0.05, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  perturbation.translation() = Eigen::Vector3d(0.07, -0.04, 0.02);
+  const PointCloud source = perturbCloud(target, perturbation);
+
+  MetalVgicpRegistration::Config config;
+  config.max_iterations = 30;
+  config.max_correspondence_distance_m = 1.0;
+  config.gpu_min_points = 0;  // GPU 経路を強制
+  // point ベースマップ (voxel_random / submap) を target_voxel_size でボクセル化。
+  config.target_voxel_size_m = target_voxel_size_m;
+  config.min_points_per_voxel = 1;
+  MetalVgicpRegistration registration(config);
+
+  const auto result = registration.align(source, map, Eigen::Isometry3d::Identity());
+  ASSERT_TRUE(result.converged);
+  const Eigen::Vector3d translation_error =
+    result.transform_world_body.translation() - perturbation.translation();
+  EXPECT_LT(translation_error.norm(), 0.03);
+  const Eigen::Matrix3d rotation_error =
+    result.transform_world_body.linear() * perturbation.linear().transpose();
+  EXPECT_LT(std::abs(Eigen::AngleAxisd(rotation_error).angle()), 0.03);
+}
+
+}  // namespace
+
+TEST(MetalVgicpRegistration, ConvergesWithNormalMapTarget)
+{
+  // normal_map は保存済みガウス分布 (point-to-plane 整形済み) を直接 target にする。
+  NormalMap::Config map_config;
+  map_config.voxel_size_m = 0.3;
+  map_config.min_points_per_cell = 1;
+  NormalMap map(map_config);
+  expectConvergesAgainstMap(map, 0.3);
+}
+
+TEST(MetalVgicpRegistration, ConvergesWithVoxelRandomMapTarget)
+{
+  // voxel_random_map は生点群を持つ → toPointCloud() をボクセル化してガウス復元。
+  VoxelRandomMap::Config map_config;
+  map_config.voxel_size_m = 0.3;
+  VoxelRandomMap map(map_config);
+  expectConvergesAgainstMap(map, 0.3);
+}
+
+TEST(MetalVgicpRegistration, ConvergesWithVoxelKeyframeSubmapTarget)
+{
+  // voxel_keyframe_submap は sliding window の生点群を持つ → ボクセル化してガウス復元。
+  // loop closure / PGO を維持したまま GPU registration を使えることの検証。
+  VoxelKeyframeSubmapManager::Config map_config;
+  map_config.voxel_size_m = 0.3;
+  VoxelKeyframeSubmapManager map(map_config);
+  expectConvergesAgainstMap(map, 0.3);
 }
 
 #else  // PYLOT_LIO_HAS_METAL
