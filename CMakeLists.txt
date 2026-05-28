@@ -31,6 +31,8 @@ find_package(TBB QUIET)
 find_package(small_gicp QUIET)
 find_package(GTSAM QUIET)
 find_package(livox_ros_driver2 QUIET)
+# オフライン rosbag リーダ (lio_rosbag) 用。 見つからなければ lio_rosbag をビルドしない。
+find_package(rosbag2_cpp QUIET)
 
 # ------------------------------------------------------------
 # 3rdparty fallback: small_gicp が見つからない場合は in-tree の
@@ -114,17 +116,22 @@ set(PYLOT_LIO_CORE_SOURCES
   src/preprocess/voxel_grid_preprocessor.cpp
   src/preprocess/random_sampling_preprocessor.cpp
   src/preprocess/voxel_random_sampling_preprocessor.cpp
+  src/map/gaussian_voxel.cpp
   src/map/voxel_map.cpp
   src/map/kd_tree_map.cpp
   src/map/normal_map.cpp
   src/map/voxel_random_map.cpp
   src/map/voxel_keyframe_submap_map.cpp
+  src/registration/source_covariance.cpp
+  src/registration/ground_constraint.cpp
   src/registration/plain_gicp_registration.cpp
+  src/registration/metal_vgicp_registration.cpp
   src/estimator/ieskf_estimator.cpp
   src/estimator/hgo_estimator.cpp
   src/estimator/gicp_only_estimator.cpp
   src/keyframe/distance_keyframe_selector.cpp
   src/livox_conversion.cpp
+  src/deskew.cpp
   src/loop/scan_context.cpp
   src/loop/scan_context_loop_detector.cpp
   src/loop/loop_closure_icp.cpp
@@ -170,6 +177,8 @@ set(PYLOT_LIO_METALCPP_INCLUDE
 target_sources(pylot_lio_core PRIVATE
   src/gpu/metal_compute_probe.cpp
   src/gpu/metal_vgicp_linearizer.cpp
+  src/gpu/metal_covariance_estimator.cpp
+  src/gpu/metal_voxel_downsampler.cpp
 )
 if(APPLE AND IS_DIRECTORY "${PYLOT_LIO_METALCPP_INCLUDE}/Metal")
   find_library(METAL_FRAMEWORK Metal)
@@ -183,6 +192,8 @@ if(APPLE AND IS_DIRECTORY "${PYLOT_LIO_METALCPP_INCLUDE}/Metal")
     set_source_files_properties(
       src/gpu/metal_compute_probe.cpp
       src/gpu/metal_vgicp_linearizer.cpp
+      src/gpu/metal_covariance_estimator.cpp
+      src/gpu/metal_voxel_downsampler.cpp
       PROPERTIES
       COMPILE_OPTIONS "-Wno-gnu-anonymous-struct;-Wno-nested-anon-types")
     message(STATUS "Metal found; 'metal' GPU backend probe enabled (metal-cpp).")
@@ -269,6 +280,24 @@ endif()
 target_link_libraries(lio_node pylot_lio_core)
 
 # ============================================================
+# lio_rosbag executable (offline rosbag reader, GLIM glim_rosbag 相当)
+# rosbag2_cpp が見つかる環境でのみビルドする。
+# ============================================================
+if(rosbag2_cpp_FOUND)
+  add_executable(lio_rosbag src/lio_rosbag.cpp)
+  if(livox_ros_driver2_FOUND)
+    ament_target_dependencies(lio_rosbag
+      ${COMMON_ROS_DEPENDENCIES} rosbag2_cpp livox_ros_driver2)
+  else()
+    ament_target_dependencies(lio_rosbag ${COMMON_ROS_DEPENDENCIES} rosbag2_cpp)
+  endif()
+  target_link_libraries(lio_rosbag pylot_lio_core)
+  message(STATUS "rosbag2_cpp found; building offline reader 'lio_rosbag'.")
+else()
+  message(STATUS "rosbag2_cpp not found; offline reader 'lio_rosbag' disabled.")
+endif()
+
+# ============================================================
 # Install
 # ============================================================
 install(TARGETS pylot_lio_core
@@ -280,6 +309,12 @@ install(TARGETS pylot_lio_core
 install(TARGETS lio_node
   DESTINATION lib/${PROJECT_NAME}
 )
+
+if(rosbag2_cpp_FOUND)
+  install(TARGETS lio_rosbag
+    DESTINATION lib/${PROJECT_NAME}
+  )
+endif()
 
 install(DIRECTORY include/
   DESTINATION include
@@ -327,6 +362,11 @@ if(BUILD_TESTING)
     test_livox_conversion
     test_metal_compute_probe
     test_metal_vgicp_linearizer
+    test_metal_vgicp_registration
+    test_metal_covariance_estimator
+    test_metal_voxel_downsampler
+    test_ground_constraint
+    test_deskew
   )
 
   foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)

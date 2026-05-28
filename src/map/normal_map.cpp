@@ -169,4 +169,24 @@ std::string NormalMap::describe() const
   return oss.str();
 }
 
+std::vector<GaussianVoxel> NormalMap::toGaussianVoxels() const
+{
+  std::vector<GaussianVoxel> voxels;
+  voxels.reserve(cells_.size());
+  for (const auto & [key, cell] : cells_) {
+    (void)key;
+    if (cell.sample_count < config_.min_points_per_cell) {
+      continue;
+    }
+    GaussianVoxel voxel;
+    voxel.mean = cell.mean;
+    // findNearestNeighbor と同じ point-to-plane 整形を適用 (NormalMap が target として
+    // 意図する共分散形)。
+    voxel.covariance = shapeAsPointToPlane(cell.covariance);
+    voxel.count = static_cast<double>(cell.sample_count);
+    voxels.push_back(voxel);
+  }
+  return voxels;
+}
+
 }  // namespace pylot_lio

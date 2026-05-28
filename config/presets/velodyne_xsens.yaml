@@ -26,6 +26,13 @@ pylot_lio:
     preprocessor: "voxel_random_sampling"
     voxel_grid_size_m: 0.4
     voxel_random_sampling_seed: 12345
+    # サンプリング率 0〜1 (GLIM の randomgrid downsampling 相当)。 各 voxel から
+    # round(点数 × rate) 点 (最低 1) を保持する。 0 で従来の「各 voxel 1 点」、 1 で全点。
+    # Velodyne は密なので 0 (1 点) で十分軽い。 細部を残したいなら 0.2〜0.5。
+    voxel_random_sampling_rate: 0.0
+    # 間引きを GPU (Metal) で行う。 GPU 無効ビルド / デバイス無では CPU に自動フォールバック。
+    # 整数演算 (reservoir + xorshift32) なので GPU と CPU の結果は完全一致する。
+    voxel_random_sampling_use_gpu: true
 
     # マップ。 Velodyne は遠距離 (~100m) まで届くので voxel と上限セル数を大きめに。
     # cell_sampling_mode: "random_one" でセル内 1 点だけ保持 → メモリ/PCD サイズ激減。

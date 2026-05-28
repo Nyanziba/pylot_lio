@@ -1,6 +1,7 @@
 // Copyright 2026 PyLoT Robotics. Licensed under the Apache License, Version 2.0.
 #include "pylot_lio/factory.hpp"
 
+#include <cstdio>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -17,6 +18,7 @@
 #include "pylot_lio/preprocess/voxel_grid_preprocessor.hpp"
 #include "pylot_lio/preprocess/voxel_random_sampling_preprocessor.hpp"
 #include "pylot_lio/registration/plain_gicp_registration.hpp"
+#include "pylot_lio/registration/metal_vgicp_registration.hpp"
 
 #ifdef PYLOT_LIO_HAS_SMALL_GICP
 #include "pylot_lio/registration/small_gicp_registration.hpp"
@@ -41,6 +43,8 @@ IPreprocessorPtr buildPreprocessor(const LioBackendConfig & config)
     VoxelRandomSamplingPreprocessor::Config voxel_random_config;
     voxel_random_config.voxel_size_m = config.voxel_grid_size_m;
     voxel_random_config.random_seed = config.voxel_random_sampling_seed;
+    voxel_random_config.sampling_rate = config.voxel_random_sampling_rate;
+    voxel_random_config.use_gpu = config.voxel_random_sampling_use_gpu;
     return std::make_unique<VoxelRandomSamplingPreprocessor>(voxel_random_config);
   }
   throw std::invalid_argument(
@@ -99,31 +103,81 @@ IPointCloudMapPtr buildPointCloudMap(const LioBackendConfig & config)
   throw std::invalid_argument("Unknown map_name: " + config.map_name);
 }
 
+// plain_gicp の Config を BackendConfig から組む (plain_gicp 本体・sycl/metal の
+// フォールバックで共用)。
+PlainGicpRegistration::Config makePlainGicpConfig(const LioBackendConfig & config)
+{
+  PlainGicpRegistration::Config plain_gicp_config;
+  plain_gicp_config.max_iterations = config.registration_max_iterations;
+  plain_gicp_config.max_correspondence_distance_m =
+    config.registration_max_correspondence_m;
+  plain_gicp_config.convergence_translation_m =
+    config.registration_convergence_translation_m;
+  plain_gicp_config.convergence_rotation_rad =
+    config.registration_convergence_rotation_rad;
+  plain_gicp_config.huber_threshold = config.registration_huber_threshold;
+  plain_gicp_config.num_threads = config.registration_num_threads;
+  plain_gicp_config.source_covariance_num_neighbors =
+    config.registration_source_covariance_num_neighbors;
+  plain_gicp_config.source_covariance_plane_epsilon =
+    config.registration_source_covariance_plane_epsilon;
+  plain_gicp_config.enable_degenerate_regularization =
+    config.enable_degenerate_regularization;
+  plain_gicp_config.rotation_eigenvalue_threshold = config.rotation_eigenvalue_threshold;
+  plain_gicp_config.translation_eigenvalue_threshold =
+    config.translation_eigenvalue_threshold;
+  plain_gicp_config.regularization_base_factor = config.regularization_base_factor;
+  plain_gicp_config.parallel_backend = config.registration_parallel_backend;
+  return plain_gicp_config;
+}
+
 IRegistrationPtr buildRegistration(const LioBackendConfig & config)
 {
   if (config.registration_name == "plain_gicp") {
-    PlainGicpRegistration::Config plain_gicp_config;
-    plain_gicp_config.max_iterations = config.registration_max_iterations;
-    plain_gicp_config.max_correspondence_distance_m =
-      config.registration_max_correspondence_m;
-    plain_gicp_config.convergence_translation_m =
-      config.registration_convergence_translation_m;
-    plain_gicp_config.convergence_rotation_rad =
-      config.registration_convergence_rotation_rad;
-    plain_gicp_config.huber_threshold = config.registration_huber_threshold;
-    plain_gicp_config.num_threads = config.registration_num_threads;
-    plain_gicp_config.source_covariance_num_neighbors =
-      config.registration_source_covariance_num_neighbors;
-    plain_gicp_config.source_covariance_plane_epsilon =
-      config.registration_source_covariance_plane_epsilon;
-    plain_gicp_config.enable_degenerate_regularization =
-      config.enable_degenerate_regularization;
-    plain_gicp_config.rotation_eigenvalue_threshold = config.rotation_eigenvalue_threshold;
-    plain_gicp_config.translation_eigenvalue_threshold =
-      config.translation_eigenvalue_threshold;
-    plain_gicp_config.regularization_base_factor = config.regularization_base_factor;
-    plain_gicp_config.parallel_backend = config.registration_parallel_backend;
-    return std::make_unique<PlainGicpRegistration>(plain_gicp_config);
+    return std::make_unique<PlainGicpRegistration>(makePlainGicpConfig(config));
+  }
+  if (config.registration_name == "metal_vgicp") {
+    // Apple Metal GPU VGICP。 非対応ビルド (PYLOT_LIO_HAS_METAL 未定義) では
+    // plain_gicp に自動フォールバックする (tbb fallback と同パターン)。
+    if (MetalVgicpRegistration::isAvailable()) {
+      MetalVgicpRegistration::Config metal_config;
+      metal_config.max_iterations = config.registration_max_iterations;
+      metal_config.max_correspondence_distance_m = config.registration_max_correspondence_m;
+      metal_config.convergence_translation_m = config.registration_convergence_translation_m;
+      metal_config.convergence_rotation_rad = config.registration_convergence_rotation_rad;
+      metal_config.huber_threshold = config.registration_huber_threshold;
+      metal_config.source_covariance_num_neighbors =
+        config.registration_source_covariance_num_neighbors;
+      metal_config.source_covariance_plane_epsilon =
+        config.registration_source_covariance_plane_epsilon;
+      metal_config.gpu_min_points = config.registration_metal_gpu_min_points;
+      metal_config.voxelmap_levels = config.registration_metal_voxelmap_levels;
+      metal_config.voxelmap_scaling_factor =
+        config.registration_metal_voxelmap_scaling_factor;
+      metal_config.use_gpu_source_covariance =
+        config.registration_metal_gpu_source_covariance;
+      metal_config.source_covariance_cell_size_m =
+        config.registration_metal_source_covariance_cell_size_m;
+      // voxel_map / normal_map 以外 (point ベースマップ) を target にするときの
+      // ボクセル化設定。 map レイヤーの voxel_size / min_points を流用する。
+      metal_config.target_voxel_size_m = config.map_voxel_size_m;
+      metal_config.min_points_per_voxel = config.map_min_points_per_cell;
+      // 地面 leveling 拘束 (IMU 重力なしのピッチドリフト対策)。
+      metal_config.enable_ground_constraint = config.registration_metal_enable_ground_constraint;
+      metal_config.ground_constraint_weight = config.registration_metal_ground_constraint_weight;
+      metal_config.ground_band_m = config.registration_metal_ground_band_m;
+      metal_config.ground_max_tilt_deg = config.registration_metal_ground_max_tilt_deg;
+      metal_config.ground_max_correction_per_frame_deg =
+        config.registration_metal_ground_max_correction_per_frame_deg;
+      metal_config.ground_vibration_threshold_deg =
+        config.registration_metal_ground_vibration_threshold_deg;
+      return std::make_unique<MetalVgicpRegistration>(metal_config);
+    }
+    std::fprintf(
+      stderr,
+      "[factory] registration='metal_vgicp' requested but this build has no Metal "
+      "support; falling back to plain_gicp.\n");
+    return std::make_unique<PlainGicpRegistration>(makePlainGicpConfig(config));
   }
 #ifdef PYLOT_LIO_HAS_SMALL_GICP
   if (config.registration_name == "small_gicp_gicp" ||
@@ -199,7 +253,15 @@ IStateEstimatorPtr buildStateEstimator(const LioBackendConfig & config)
     return std::make_unique<HgoEstimator>(hgo_config);
   }
   if (config.state_estimator_name == "gicp_only") {
-    return std::make_unique<GicpOnlyEstimator>();
+    GicpOnlyEstimator::RejectionConfig rejection_config;
+    rejection_config.enabled = config.gicp_only_rejection_enabled;
+    rejection_config.max_translation_correction_m =
+      config.gicp_only_max_translation_correction_m;
+    rejection_config.max_rotation_correction_deg =
+      config.gicp_only_max_rotation_correction_deg;
+    rejection_config.min_correspondences_when_unconverged =
+      config.gicp_only_min_correspondences_when_unconverged;
+    return std::make_unique<GicpOnlyEstimator>(rejection_config);
   }
   throw std::invalid_argument(
     "Unknown state_estimator_name: " + config.state_estimator_name);

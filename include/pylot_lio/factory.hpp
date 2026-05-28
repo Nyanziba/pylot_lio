@@ -24,6 +24,12 @@ struct LioBackendConfig
   int random_sampling_target_count = 8192;
   // voxel_random_sampling 用: 乱数 seed (0 でマシン乱数)
   int voxel_random_sampling_seed = 12345;
+  // voxel_random_sampling 用: サンプリング率 0〜1 (GLIM の randomgrid downsampling 相当)。
+  // 各 voxel から round(点数 × rate) 点 (最低 1) を保持。 0 で従来の voxel 1 点、 1 で全点。
+  double voxel_random_sampling_rate = 0.0;
+  // voxel_random_sampling 用: 間引きを GPU (Metal) で行うか。 GPU 無効ビルド / デバイス無
+  // では CPU に自動フォールバック。
+  bool voxel_random_sampling_use_gpu = true;
 
   // map
   std::string map_name = "voxel_keyframe_submap";
@@ -49,6 +55,9 @@ struct LioBackendConfig
 
   // loop closure (Scan Context detection)
   bool enable_loop_detection = true;
+  // keyframe ごとの [loop_diag] 診断ログを出すか。 切り分け時は true、 通常運用や
+  // 高速 bag 処理でログを静かにしたいときは false。
+  bool enable_loop_diag = true;
   int loop_num_rings = 60;
   int loop_num_sectors = 20;
   double loop_max_radius_m = 80.0;
@@ -103,6 +112,35 @@ struct LioBackendConfig
   int registration_source_covariance_num_neighbors = 10;
   double registration_source_covariance_plane_epsilon = 1e-3;
 
+  // metal_vgicp 用: GPU を使う最小 source 点数。 これ未満は CPU VGICP に自動切替
+  // (GPU 起動オーバヘッド回避)。 0 で常に GPU。 他の registration では無視される。
+  int registration_metal_gpu_min_points = 50000;
+
+  // metal_vgicp 用: 多重解像度 (coarse-to-fine) VGICP。 levels=1 で単一解像度。
+  int registration_metal_voxelmap_levels = 2;
+  double registration_metal_voxelmap_scaling_factor = 2.0;
+
+  // metal_vgicp 用: source 共分散推定 (前処理) を GPU で行うか。 true なら k 近傍探索 +
+  // 平面正則化を Metal にオフロード (glim 相当の前処理 GPU 化)。 GPU 無効ビルド /
+  // デバイス無では CPU 参照 (グリッド kNN) に自動フォールバック。 他 registration では無視。
+  bool registration_metal_gpu_source_covariance = true;
+  // GPU 共分散推定の近傍探索グリッドのセル一辺 [m]。 source 点群密度に対して
+  // 「k 近傍が 27 近傍セルに収まる」 程度に取る。
+  double registration_metal_source_covariance_cell_size_m = 0.5;
+
+  // metal_vgicp 用: 地面平面 leveling 拘束。 IMU 重力が使えない (extrinsic 未知) ときに、
+  // 各スキャンの地面法線を world-up (0,0,1) に合わせてロール/ピッチを pin し、 遠方地面の
+  // お椀化 (ピッチドリフト) を抑える。 平地走行が前提。 他 registration では無視。
+  bool registration_metal_enable_ground_constraint = false;
+  double registration_metal_ground_constraint_weight = 1.0;
+  double registration_metal_ground_band_m = 0.5;
+  double registration_metal_ground_max_tilt_deg = 30.0;
+  // damping: 1 align あたりの leveling 補正上限 [deg]。 0 で無制限 (hard)。
+  double registration_metal_ground_max_correction_per_frame_deg = 1.0;
+  // 振動ゲート: 前フレームの地面法線 (body) から角度差 > これ [deg] のフレームは
+  // 「車体ピッチ振動中」 とみなして拘束をスキップ。 0 で振動ゲート無効。
+  double registration_metal_ground_vibration_threshold_deg = 3.0;
+
   // plain_gicp 用: 縮退方向 Tikhonov 正則化 (X-ICP / sycl_points 流)。
   // 廊下や対称的な環境で回転/並進が拘束されないときに姿勢が暴れるのを防ぐ。
   bool enable_degenerate_regularization = false;
@@ -112,6 +150,16 @@ struct LioBackendConfig
 
   // state estimator
   std::string state_estimator_name = "ieskf";    // ieskf | hgo | gicp_only
+
+  // ---- registration rejection (gicp_only 専用、 IESKF/HGO は IMU で別途守られる) ----
+  // registration が物理的にあり得ない補正を出した frame を破棄して CV 予測を採用する
+  // フォールバック。 局所的に LiDAR の対応が取れない (開けた場所・動的物体・geometric
+  // degeneracy) 場面で 1 frame の誤登録が pose を 2-3m 飛ばし、 以降の registration を
+  // 連鎖的に壊す問題を防ぐ。
+  bool gicp_only_rejection_enabled = false;
+  double gicp_only_max_translation_correction_m = 0.5;
+  double gicp_only_max_rotation_correction_deg = 30.0;
+  int gicp_only_min_correspondences_when_unconverged = 15000;
 
   // IMU linear_acceleration の単位補正係数。 sensor_msgs/Imu の規約は m/s² だが、
   // Livox driver 等は実際には g 単位で出してくるケースがある (静止時 acc.z ≈ 1.0)。

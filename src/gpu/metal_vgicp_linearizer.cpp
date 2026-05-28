@@ -245,6 +245,23 @@ VgicpLinearization linearizeVgicpMetal(
   return result;
 }
 
+// Metal 非対応ビルド向けエンジンスタブ (isValid()=false、 全操作 no-op / 未収束)。
+struct MetalVgicpEngine::Impl {};
+MetalVgicpEngine::MetalVgicpEngine() : impl_(nullptr) {}
+MetalVgicpEngine::~MetalVgicpEngine() = default;
+bool MetalVgicpEngine::isValid() const { return false; }
+void MetalVgicpEngine::setTarget(const VgicpVoxelTable &) {}
+void MetalVgicpEngine::setSource(
+  const std::vector<Eigen::Vector3d> &, const std::vector<Eigen::Matrix3d> &) {}
+VgicpLinearization MetalVgicpEngine::linearize(
+  const Eigen::Isometry3d &, const VgicpLinearizeConfig &)
+{
+  VgicpLinearization result;
+  result.gpu_used = false;
+  result.error_message = "Metal support not compiled in (PYLOT_LIO_HAS_METAL undefined)";
+  return result;
+}
+
 #else  // PYLOT_LIO_HAS_METAL
 
 namespace
@@ -505,6 +522,250 @@ kernel void vgicp_linearize(
 
 }  // namespace
 
+// ============================================================
+// MetalVgicpEngine::Impl: device/PSO とバッファを永続保持する。
+// ============================================================
+struct MetalVgicpEngine::Impl
+{
+  // プロセス寿命で 1 回構築 (PSO コンパイル含む)。
+  MTL::Device * device = nullptr;
+  MTL::CommandQueue * queue = nullptr;
+  MTL::Library * library = nullptr;
+  MTL::Function * function = nullptr;
+  MTL::ComputePipelineState * pso = nullptr;
+  MTL::Buffer * buf_params = nullptr;  // 固定サイズ (sizeof VgicpKernelParams)
+
+  // align ごとに差し替える target ボクセルバッファ。
+  MTL::Buffer * buf_occupied = nullptr;
+  MTL::Buffer * buf_keys = nullptr;
+  MTL::Buffer * buf_means = nullptr;
+  MTL::Buffer * buf_vcovs = nullptr;
+  float voxel_size = 0.5f;
+  std::uint32_t capacity = 0;
+
+  // align ごとに差し替える source バッファ + partials。
+  MTL::Buffer * buf_points = nullptr;
+  MTL::Buffer * buf_covs = nullptr;
+  MTL::Buffer * buf_partials = nullptr;
+  std::uint32_t num_points = 0;
+  int num_groups = 0;
+
+  static void releaseBuffer(MTL::Buffer *& buffer)
+  {
+    if (buffer != nullptr) {
+      buffer->release();
+      buffer = nullptr;
+    }
+  }
+
+  ~Impl()
+  {
+    releaseBuffer(buf_points);
+    releaseBuffer(buf_covs);
+    releaseBuffer(buf_partials);
+    releaseBuffer(buf_occupied);
+    releaseBuffer(buf_keys);
+    releaseBuffer(buf_means);
+    releaseBuffer(buf_vcovs);
+    releaseBuffer(buf_params);
+    if (pso != nullptr) { pso->release(); }
+    if (function != nullptr) { function->release(); }
+    if (library != nullptr) { library->release(); }
+    if (queue != nullptr) { queue->release(); }
+    if (device != nullptr) { device->release(); }
+  }
+};
+
+MetalVgicpEngine::MetalVgicpEngine() : impl_(std::make_unique<Impl>())
+{
+  NS::AutoreleasePool * pool = NS::AutoreleasePool::alloc()->init();
+  impl_->device = MTL::CreateSystemDefaultDevice();
+  if (impl_->device != nullptr) {
+    NS::Error * compile_error = nullptr;
+    NS::String * source = NS::String::string(kVgicpKernelSource, NS::UTF8StringEncoding);
+    impl_->library = impl_->device->newLibrary(source, nullptr, &compile_error);
+    if (impl_->library != nullptr) {
+      impl_->function = impl_->library->newFunction(
+        NS::String::string("vgicp_linearize", NS::UTF8StringEncoding));
+      NS::Error * pso_error = nullptr;
+      impl_->pso = impl_->device->newComputePipelineState(impl_->function, &pso_error);
+      impl_->queue = impl_->device->newCommandQueue();
+      impl_->buf_params = impl_->device->newBuffer(
+        sizeof(VgicpKernelParams), MTL::ResourceStorageModeShared);
+    }
+  }
+  pool->release();
+}
+
+MetalVgicpEngine::~MetalVgicpEngine() = default;
+
+bool MetalVgicpEngine::isValid() const
+{
+  return impl_ && impl_->device != nullptr && impl_->pso != nullptr &&
+    impl_->queue != nullptr && impl_->buf_params != nullptr;
+}
+
+void MetalVgicpEngine::setTarget(const VgicpVoxelTable & voxel_table)
+{
+  if (!impl_) {
+    return;
+  }
+  if (!isValid() || voxel_table.capacity <= 0) {
+    Impl::releaseBuffer(impl_->buf_occupied);
+    Impl::releaseBuffer(impl_->buf_keys);
+    Impl::releaseBuffer(impl_->buf_means);
+    Impl::releaseBuffer(impl_->buf_vcovs);
+    impl_->voxel_size = 0.0f;
+    impl_->capacity = 0;
+    return;
+  }
+  NS::AutoreleasePool * pool = NS::AutoreleasePool::alloc()->init();
+  Impl::releaseBuffer(impl_->buf_occupied);
+  Impl::releaseBuffer(impl_->buf_keys);
+  Impl::releaseBuffer(impl_->buf_means);
+  Impl::releaseBuffer(impl_->buf_vcovs);
+  auto make_buffer = [&](const void * data, std::size_t bytes) {
+    return impl_->device->newBuffer(data, bytes, MTL::ResourceStorageModeShared);
+  };
+  impl_->buf_occupied = make_buffer(voxel_table.occupied.data(), voxel_table.occupied.size());
+  impl_->buf_keys = make_buffer(
+    voxel_table.voxel_keys_xyz.data(), voxel_table.voxel_keys_xyz.size() * sizeof(std::int32_t));
+  impl_->buf_means = make_buffer(
+    voxel_table.means_xyz.data(), voxel_table.means_xyz.size() * sizeof(float));
+  impl_->buf_vcovs = make_buffer(
+    voxel_table.covariances.data(), voxel_table.covariances.size() * sizeof(float));
+  impl_->voxel_size = voxel_table.voxel_size_m;
+  impl_->capacity = static_cast<std::uint32_t>(voxel_table.capacity);
+  pool->release();
+}
+
+void MetalVgicpEngine::setSource(
+  const std::vector<Eigen::Vector3d> & source_points_body,
+  const std::vector<Eigen::Matrix3d> & source_covariances_body)
+{
+  if (!isValid() || source_points_body.empty() ||
+      source_covariances_body.size() != source_points_body.size())
+  {
+    impl_->num_points = 0;
+    return;
+  }
+  NS::AutoreleasePool * pool = NS::AutoreleasePool::alloc()->init();
+  const std::size_t num_points = source_points_body.size();
+  std::vector<float> points_flat(num_points * 3);
+  std::vector<float> covs_flat(num_points * 9);
+  for (std::size_t i = 0; i < num_points; ++i) {
+    points_flat[i * 3 + 0] = static_cast<float>(source_points_body[i].x());
+    points_flat[i * 3 + 1] = static_cast<float>(source_points_body[i].y());
+    points_flat[i * 3 + 2] = static_cast<float>(source_points_body[i].z());
+    for (int r = 0; r < 3; ++r) {
+      for (int c = 0; c < 3; ++c) {
+        covs_flat[i * 9 + r * 3 + c] = static_cast<float>(source_covariances_body[i](r, c));
+      }
+    }
+  }
+  Impl::releaseBuffer(impl_->buf_points);
+  Impl::releaseBuffer(impl_->buf_covs);
+  Impl::releaseBuffer(impl_->buf_partials);
+  impl_->buf_points = impl_->device->newBuffer(
+    points_flat.data(), points_flat.size() * sizeof(float), MTL::ResourceStorageModeShared);
+  impl_->buf_covs = impl_->device->newBuffer(
+    covs_flat.data(), covs_flat.size() * sizeof(float), MTL::ResourceStorageModeShared);
+  impl_->num_points = static_cast<std::uint32_t>(num_points);
+  impl_->num_groups =
+    static_cast<int>((num_points + kThreadgroupSize - 1) / kThreadgroupSize);
+  impl_->buf_partials = impl_->device->newBuffer(
+    static_cast<std::size_t>(impl_->num_groups) * kPartialStride * sizeof(float),
+    MTL::ResourceStorageModeShared);
+  pool->release();
+}
+
+VgicpLinearization MetalVgicpEngine::linearize(
+  const Eigen::Isometry3d & transform_world_body,
+  const VgicpLinearizeConfig & config)
+{
+  VgicpLinearization result;
+  if (!isValid()) {
+    result.error_message = "engine not valid (no Metal device / PSO)";
+    return result;
+  }
+  if (impl_->capacity == 0 || impl_->num_points == 0) {
+    result.error_message = "setTarget / setSource not called or empty";
+    return result;
+  }
+
+  NS::AutoreleasePool * pool = NS::AutoreleasePool::alloc()->init();
+
+  // params バッファの内容を更新 (transform + config + キャッシュ済みメタデータ)。
+  VgicpKernelParams * params =
+    static_cast<VgicpKernelParams *>(impl_->buf_params->contents());
+  const Eigen::Matrix3d rotation = transform_world_body.linear();
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      params->rotation[r * 3 + c] = static_cast<float>(rotation(r, c));
+    }
+  }
+  params->translation[0] = static_cast<float>(transform_world_body.translation().x());
+  params->translation[1] = static_cast<float>(transform_world_body.translation().y());
+  params->translation[2] = static_cast<float>(transform_world_body.translation().z());
+  params->voxel_size = impl_->voxel_size;
+  params->inv_voxel_size = 1.0f / impl_->voxel_size;
+  params->huber_threshold = config.huber_threshold;
+  params->max_corr_sq =
+    config.max_correspondence_distance_m * config.max_correspondence_distance_m;
+  params->capacity = impl_->capacity;
+  params->num_points = impl_->num_points;
+  params->search_radius = config.search_radius_voxels;
+  params->padding = 0;
+
+  MTL::CommandBuffer * command_buffer = impl_->queue->commandBuffer();
+  MTL::ComputeCommandEncoder * encoder = command_buffer->computeCommandEncoder();
+  encoder->setComputePipelineState(impl_->pso);
+  encoder->setBuffer(impl_->buf_points, 0, 0);
+  encoder->setBuffer(impl_->buf_covs, 0, 1);
+  encoder->setBuffer(impl_->buf_occupied, 0, 2);
+  encoder->setBuffer(impl_->buf_keys, 0, 3);
+  encoder->setBuffer(impl_->buf_means, 0, 4);
+  encoder->setBuffer(impl_->buf_vcovs, 0, 5);
+  encoder->setBuffer(impl_->buf_params, 0, 6);
+  encoder->setBuffer(impl_->buf_partials, 0, 7);
+  const MTL::Size grid = MTL::Size::Make(
+    static_cast<NS::UInteger>(impl_->num_groups), 1, 1);
+  const MTL::Size tg = MTL::Size::Make(kThreadgroupSize, 1, 1);
+  encoder->dispatchThreadgroups(grid, tg);
+  encoder->endEncoding();
+  command_buffer->commit();
+  command_buffer->waitUntilCompleted();
+
+  // threadgroup 部分和を CPU で固定順序合算。
+  const float * partials = static_cast<const float *>(impl_->buf_partials->contents());
+  double accum[kPartialStride];
+  for (int k = 0; k < kPartialStride; ++k) { accum[k] = 0.0; }
+  for (int group = 0; group < impl_->num_groups; ++group) {
+    for (int k = 0; k < kPartialStride; ++k) {
+      accum[k] += static_cast<double>(partials[group * kPartialStride + k]);
+    }
+  }
+
+  int idx = 0;
+  for (int a = 0; a < 6; ++a) {
+    for (int b = a; b < 6; ++b) {
+      const double value = accum[idx];
+      result.hessian(a, b) = value;
+      result.hessian(b, a) = value;
+      ++idx;
+    }
+  }
+  for (int a = 0; a < 6; ++a) {
+    result.gradient(a) = accum[21 + a];
+  }
+  result.cost = accum[27];
+  result.valid_correspondences = static_cast<int>(std::lround(accum[28]));
+  result.gpu_used = true;
+
+  pool->release();
+  return result;
+}
+
 VgicpLinearization linearizeVgicpMetal(
   const std::vector<Eigen::Vector3d> & source_points_body,
   const std::vector<Eigen::Matrix3d> & source_covariances_body,
@@ -523,166 +784,18 @@ VgicpLinearization linearizeVgicpMetal(
     return result;
   }
 
-  NS::AutoreleasePool * pool = NS::AutoreleasePool::alloc()->init();
-
-  MTL::Device * device = MTL::CreateSystemDefaultDevice();
-  if (device == nullptr) {
-    result.error_message = "no Metal device";
-    pool->release();
-    // CPU フォールバック (gpu_used=false のまま)。
+  // 単発用途: 一時エンジンを作って 1 回だけ走らせる (PSO コンパイルを毎回含む)。
+  // GN ループのように反復するなら MetalVgicpEngine を直接保持して使い回すこと。
+  MetalVgicpEngine engine;
+  if (!engine.isValid()) {
     VgicpLinearization cpu = linearizeVgicpCpu(
       source_points_body, source_covariances_body, voxel_table, transform_world_body, config);
-    cpu.error_message = result.error_message;
+    cpu.error_message = "no Metal device; fell back to CPU";
     return cpu;
   }
-
-  NS::Error * compile_error = nullptr;
-  NS::String * source = NS::String::string(kVgicpKernelSource, NS::UTF8StringEncoding);
-  MTL::Library * library = device->newLibrary(source, nullptr, &compile_error);
-  if (library == nullptr) {
-    result.error_message = "kernel compile failed: ";
-    if (compile_error != nullptr) {
-      result.error_message += compile_error->localizedDescription()->utf8String();
-    }
-    device->release();
-    pool->release();
-    return result;
-  }
-  MTL::Function * function =
-    library->newFunction(NS::String::string("vgicp_linearize", NS::UTF8StringEncoding));
-  NS::Error * pso_error = nullptr;
-  MTL::ComputePipelineState * pso = device->newComputePipelineState(function, &pso_error);
-  if (pso == nullptr) {
-    result.error_message = "pipeline creation failed";
-    function->release();
-    library->release();
-    device->release();
-    pool->release();
-    return result;
-  }
-
-  // --- 入力をフラット fp32 配列に詰める ---
-  std::vector<float> source_points_flat(num_points * 3);
-  std::vector<float> source_covs_flat(num_points * 9);
-  for (std::size_t i = 0; i < num_points; ++i) {
-    source_points_flat[i * 3 + 0] = static_cast<float>(source_points_body[i].x());
-    source_points_flat[i * 3 + 1] = static_cast<float>(source_points_body[i].y());
-    source_points_flat[i * 3 + 2] = static_cast<float>(source_points_body[i].z());
-    for (int r = 0; r < 3; ++r) {
-      for (int c = 0; c < 3; ++c) {
-        source_covs_flat[i * 9 + r * 3 + c] =
-          static_cast<float>(source_covariances_body[i](r, c));
-      }
-    }
-  }
-
-  VgicpKernelParams params{};
-  const Eigen::Matrix3d rotation = transform_world_body.linear();
-  for (int r = 0; r < 3; ++r) {
-    for (int c = 0; c < 3; ++c) {
-      params.rotation[r * 3 + c] = static_cast<float>(rotation(r, c));
-    }
-  }
-  params.translation[0] = static_cast<float>(transform_world_body.translation().x());
-  params.translation[1] = static_cast<float>(transform_world_body.translation().y());
-  params.translation[2] = static_cast<float>(transform_world_body.translation().z());
-  params.voxel_size = voxel_table.voxel_size_m;
-  params.inv_voxel_size = 1.0f / voxel_table.voxel_size_m;
-  params.huber_threshold = config.huber_threshold;
-  params.max_corr_sq =
-    config.max_correspondence_distance_m * config.max_correspondence_distance_m;
-  params.capacity = static_cast<std::uint32_t>(voxel_table.capacity);
-  params.num_points = static_cast<std::uint32_t>(num_points);
-  params.search_radius = config.search_radius_voxels;
-  params.padding = 0;
-
-  const int num_groups =
-    static_cast<int>((num_points + kThreadgroupSize - 1) / kThreadgroupSize);
-
-  auto make_buffer = [&](const void * data, std::size_t bytes) {
-    return device->newBuffer(data, bytes, MTL::ResourceStorageModeShared);
-  };
-  MTL::Buffer * buf_points =
-    make_buffer(source_points_flat.data(), source_points_flat.size() * sizeof(float));
-  MTL::Buffer * buf_covs =
-    make_buffer(source_covs_flat.data(), source_covs_flat.size() * sizeof(float));
-  MTL::Buffer * buf_occupied =
-    make_buffer(voxel_table.occupied.data(), voxel_table.occupied.size());
-  MTL::Buffer * buf_keys =
-    make_buffer(voxel_table.voxel_keys_xyz.data(),
-      voxel_table.voxel_keys_xyz.size() * sizeof(std::int32_t));
-  MTL::Buffer * buf_means =
-    make_buffer(voxel_table.means_xyz.data(), voxel_table.means_xyz.size() * sizeof(float));
-  MTL::Buffer * buf_vcovs =
-    make_buffer(voxel_table.covariances.data(), voxel_table.covariances.size() * sizeof(float));
-  MTL::Buffer * buf_params = make_buffer(&params, sizeof(VgicpKernelParams));
-  MTL::Buffer * buf_partials = device->newBuffer(
-    static_cast<std::size_t>(num_groups) * kPartialStride * sizeof(float),
-    MTL::ResourceStorageModeShared);
-
-  MTL::CommandQueue * queue = device->newCommandQueue();
-  MTL::CommandBuffer * command_buffer = queue->commandBuffer();
-  MTL::ComputeCommandEncoder * encoder = command_buffer->computeCommandEncoder();
-  encoder->setComputePipelineState(pso);
-  encoder->setBuffer(buf_points, 0, 0);
-  encoder->setBuffer(buf_covs, 0, 1);
-  encoder->setBuffer(buf_occupied, 0, 2);
-  encoder->setBuffer(buf_keys, 0, 3);
-  encoder->setBuffer(buf_means, 0, 4);
-  encoder->setBuffer(buf_vcovs, 0, 5);
-  encoder->setBuffer(buf_params, 0, 6);
-  encoder->setBuffer(buf_partials, 0, 7);
-  const MTL::Size grid = MTL::Size::Make(
-    static_cast<NS::UInteger>(num_groups), 1, 1);
-  const MTL::Size tg = MTL::Size::Make(kThreadgroupSize, 1, 1);
-  encoder->dispatchThreadgroups(grid, tg);
-  encoder->endEncoding();
-  command_buffer->commit();
-  command_buffer->waitUntilCompleted();
-
-  // --- threadgroup 部分和を CPU で固定順序合算 ---
-  const float * partials = static_cast<const float *>(buf_partials->contents());
-  double accum[kPartialStride];
-  for (int k = 0; k < kPartialStride; ++k) { accum[k] = 0.0; }
-  for (int group = 0; group < num_groups; ++group) {
-    for (int k = 0; k < kPartialStride; ++k) {
-      accum[k] += static_cast<double>(partials[group * kPartialStride + k]);
-    }
-  }
-
-  // 上三角 21 個から対称 H を復元。
-  int idx = 0;
-  for (int a = 0; a < 6; ++a) {
-    for (int b = a; b < 6; ++b) {
-      const double value = accum[idx];
-      result.hessian(a, b) = value;
-      result.hessian(b, a) = value;
-      ++idx;
-    }
-  }
-  for (int a = 0; a < 6; ++a) {
-    result.gradient(a) = accum[21 + a];
-  }
-  result.cost = accum[27];
-  result.valid_correspondences = static_cast<int>(std::lround(accum[28]));
-  result.gpu_used = true;
-
-  buf_partials->release();
-  buf_params->release();
-  buf_vcovs->release();
-  buf_means->release();
-  buf_keys->release();
-  buf_occupied->release();
-  buf_covs->release();
-  buf_points->release();
-  queue->release();
-  pso->release();
-  function->release();
-  library->release();
-  device->release();
-  pool->release();
-
-  return result;
+  engine.setTarget(voxel_table);
+  engine.setSource(source_points_body, source_covariances_body);
+  return engine.linearize(transform_world_body, config);
 }
 
 #endif  // PYLOT_LIO_HAS_METAL

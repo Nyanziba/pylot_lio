@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "pylot_lio/map/gaussian_voxel.hpp"
 #include "pylot_lio/map/i_point_cloud_map.hpp"
 
 namespace pylot_lio
@@ -42,6 +43,11 @@ public:
   std::size_t size() const override;
   PointCloudPtr toPointCloud() const override;
   std::string describe() const override;
+
+  // 各ボクセルの保存済みガウス分布 (point-to-plane 整形済み共分散) を中間表現で返す。
+  // metal_vgicp が target として受け取るのに使う (toPointCloud() は 1 ボクセル 1 点
+  // なので共分散が復元できない)。 sample_count が min_points_per_cell 未満は除外。
+  std::vector<GaussianVoxel> toGaussianVoxels() const;
 
 private:
   struct Cell

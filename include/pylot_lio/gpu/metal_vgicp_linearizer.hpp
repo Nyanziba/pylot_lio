@@ -3,6 +3,7 @@
 #define PYLOT_LIO__GPU__METAL_VGICP_LINEARIZER_HPP_
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -82,14 +83,60 @@ VgicpLinearization linearizeVgicpCpu(
   const Eigen::Isometry3d & transform_world_body,
   const VgicpLinearizeConfig & config);
 
-// Metal GPU 実装。 PYLOT_LIO_HAS_METAL が無効なら gpu_used=false で即返す。
+// Metal GPU 実装 (単発)。 PYLOT_LIO_HAS_METAL が無効なら gpu_used=false で即返す。
 // 数式は linearizeVgicpCpu と同一だが内部 fp32 のため結果は厳密一致しない。
+// 内部で MetalVgicpEngine を一時生成する (PSO コンパイルを含むので単発用途向け)。
 VgicpLinearization linearizeVgicpMetal(
   const std::vector<Eigen::Vector3d> & source_points_body,
   const std::vector<Eigen::Matrix3d> & source_covariances_body,
   const VgicpVoxelTable & voxel_table,
   const Eigen::Isometry3d & transform_world_body,
   const VgicpLinearizeConfig & config);
+
+// ============================================================
+// MetalVgicpEngine: GPU リソースを永続化して GN ループを高速化するエンジン。
+// ============================================================
+// 「カーネルの実行時コンパイル (newLibrary, ~100ms) はプロセスで 1 回」
+// 「source/voxel バッファは align ごとに 1 回」
+// 「transform 定数だけ反復ごとに更新」 という分割で、 反復ごとの再アップロードと
+// 再コンパイルを排除する。 metal-cpp 型はヘッダに出さず PImpl で隠蔽する
+// (このヘッダを include する側に metal-cpp 依存を波及させない)。
+//
+// 使い方:
+//   MetalVgicpEngine engine;            // ctor で device/queue/PSO を 1 回構築
+//   if (!engine.isValid()) { ... }      // Metal 無効ビルド / デバイス無で false
+//   engine.setTarget(voxel_table);      // align ごとに 1 回
+//   engine.setSource(points, covs);     // align ごとに 1 回
+//   for (iter) { auto lin = engine.linearize(T, config); ... }  // 反復ごと
+class MetalVgicpEngine
+{
+public:
+  MetalVgicpEngine();
+  ~MetalVgicpEngine();
+
+  MetalVgicpEngine(const MetalVgicpEngine &) = delete;
+  MetalVgicpEngine & operator=(const MetalVgicpEngine &) = delete;
+
+  // device/PSO を構築できたか (= Metal 対応ビルド & GPU 有 & カーネルコンパイル成功)。
+  bool isValid() const;
+
+  // align ごとに 1 回: target ボクセル表をアップロードする。
+  void setTarget(const VgicpVoxelTable & voxel_table);
+  // align ごとに 1 回: source 点と共分散をアップロードする。
+  void setSource(
+    const std::vector<Eigen::Vector3d> & source_points_body,
+    const std::vector<Eigen::Matrix3d> & source_covariances_body);
+
+  // 反復ごと: transform 定数だけ更新して 1 反復ぶんの線形化を実行する。
+  // setTarget / setSource が事前に呼ばれている前提。
+  VgicpLinearization linearize(
+    const Eigen::Isometry3d & transform_world_body,
+    const VgicpLinearizeConfig & config);
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace pylot_lio::gpu
 

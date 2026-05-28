@@ -187,4 +187,22 @@ VoxelMap::cells() const
   return cells_;
 }
 
+std::vector<GaussianVoxel> VoxelMap::toGaussianVoxels() const
+{
+  std::vector<GaussianVoxel> voxels;
+  voxels.reserve(cells_.size());
+  for (const auto & [key, cell] : cells_) {
+    (void)key;
+    if (cell.sample_count < config_.min_points_per_cell_for_covariance) {
+      continue;
+    }
+    GaussianVoxel voxel;
+    voxel.mean = cell.mean;
+    voxel.covariance = cell.covariance;
+    voxel.count = static_cast<double>(cell.sample_count);
+    voxels.push_back(voxel);
+  }
+  return voxels;
+}
+
 }  // namespace pylot_lio

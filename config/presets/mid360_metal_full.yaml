@@ -1,0 +1,96 @@
+# Preset: Livox Mid-360 向け「GPU 全部のせ」。 前処理 (ダウンサンプリング + source 共分散) と
+# registration (VGICP 線形化) のすべてを Apple Metal GPU にオフロードする。
+#
+# GPU 化される処理:
+#   1. ダウンサンプリング : voxel_random_sampling を Metal で実行 (reservoir sampling)。
+#   2. source 共分散推定   : k 近傍探索 + 平面正則化を Metal で実行 (glim 相当の前処理 GPU 化)。
+#   3. registration 線形化 : VGICP の正規方程式 (H, b) 構築を Metal で実行。
+# どれも GPU 無効ビルド / デバイス無では自動的に CPU 経路にフォールバックする。
+#
+# 重要な制約:
+#   - map は必ず "voxel_map" (metal_vgicp は target を VoxelMap に dynamic_cast する)。
+#   - GPU は fp32 (Apple GPU は fp64 不可)。 共分散・registration は CPU(fp64) とビット一致
+#     しない (mm/mrad オーダーで一致)。 ダウンサンプリングは整数演算なので GPU=CPU 完全一致。
+#   - Mid-360 単スキャンは ~2万点と疎なので、 registration 線形化は起動オーバヘッドで
+#     CPU が勝つ規模 (ベンチの交差点 ~5万点)。 ここでは「常に GPU」(gpu_min_points: 0) に
+#     して GPU 経路を最大限使う構成にしている (速度より GPU 検証/デモ寄り)。
+pylot_lio:
+  ros__parameters:
+    # ---- 前処理: GPU voxel random sampling ----
+    preprocessor: "voxel_random_sampling"
+    voxel_grid_size_m: 0.3
+    # rate=1.0: 各ボクセルの点を全部残す (Mid-360 は元々疎なので間引きすぎない)。
+    voxel_random_sampling_rate: 1.0
+    voxel_random_sampling_use_gpu: true
+    voxel_random_sampling_seed: 12345
+
+    # ★ metal_vgicp は voxel_map 必須。
+    map: "voxel_map"
+    map_voxel_size_m: 0.3
+    map_min_points_per_cell: 1
+
+    # ---- registration: Metal GPU VGICP ----
+    registration: "metal_vgicp"
+    registration_max_iterations: 20
+    registration_max_correspondence_m: 2.0
+    registration_convergence_translation_m: 0.0001
+    registration_convergence_rotation_rad: 0.0001
+    registration_huber_threshold: 1.0
+    registration_source_covariance_num_neighbors: 10
+    registration_source_covariance_plane_epsilon: 0.001
+
+    # ---- 前処理 (source 共分散推定) の GPU 化 ----
+    registration_metal_gpu_source_covariance: true
+    registration_metal_source_covariance_cell_size_m: 0.5
+
+    # ---- GPU / CPU 切替: この preset は常に GPU ----
+    registration_metal_gpu_min_points: 0
+
+    # ---- 多重解像度 (coarse-to-fine) VGICP ----
+    registration_metal_voxelmap_levels: 2
+    registration_metal_voxelmap_scaling_factor: 2.0
+
+    # ---- オフライン rosbag リーダの進捗ログ ----
+    rosbag_progress_log_interval_clouds: 100
+    
+
+    state_estimator: "gicp_only"
+    enable_loop_diag: false
+    # ---- 等速度モデルの暴走防止 (デフォルト維持) ----
+    # 等速度外挿で 1 スキャン分の相対変換が大きすぎる場合のクランプ。
+    gicp_only_max_extrapolation_translation_m: 1.0
+    gicp_only_max_extrapolation_rotation_rad: 0.5
+
+    # ---- A. 多候補 initial guess ----
+    # 等速度モデルが頭脱したとき (急停止、 前回 align の誤対応) も静止仮定側で救済する。
+    gicp_only_enable_static_candidate: true
+    # ---- E. 等加速度候補 ----
+    # 過去 3 つの pose から jerk を計算してもう 1 ステップ加算した姿勢を候補に加える。
+    # 急加減速時の追従性を上げる。 計算量は最大 3 倍 (align 3 回)。
+    gicp_only_enable_acceleration_candidate: true
+
+    # ---- B. SE(3) サニティチェック (initial_guess 基準) ----
+    # align 結果 pose と initial_guess の SE(3) 差が以下を超えたら棄却 → initial_guess を採用。
+    # 高速回転中の正当な大きな補正もここで落ちるので、 max_extrapolation_* と同程度に設定。
+    gicp_only_max_correction_translation_m: 0.5
+    gicp_only_max_correction_rotation_rad: 0.3
+
+    # ---- B'. jerk サニティチェック (前回 step 比較) ----
+    # 「前回 step (N-1→N)」と「今回 align で得られた step (N→align)」の差が大きすぎたら棄却。
+    # 高速回転の正当な補正と一過性の誤対応ジャンプを区別したい場合に有効。
+    gicp_only_max_jerk_translation_m: 0.3
+    gicp_only_max_jerk_rotation_rad: 0.2
+
+    # ---- C. 静止検出 + align 抑制 ----
+    # 「直前 1 スキャン分の delta」 が両方とも閾値以下のスキャンが streak_required 回連続で
+    # align をスキップして pose 据え置き。 ドリフトを map に焼き込む事故を防ぐ。
+    gicp_only_stationary_translation_threshold_m: 0.01
+    gicp_only_stationary_rotation_threshold_rad: 0.01
+    gicp_only_stationary_streak_required: 3
+
+    # ---- D. SE(3) tangent space EMA ----
+    # 出力 pose を 「前回 filtered pose から align 結果まで alpha 分だけ近づける」 形で平滑化。
+    # 1.0 で無効、 0 で凍結。 並進と回転で別々に設定可。 やや平滑化の 0.7 を選択。
+    gicp_only_ema_alpha_translation: 0.7
+    gicp_only_ema_alpha_rotation: 0.7
+

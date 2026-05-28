@@ -9,6 +9,7 @@
 
 #include <Eigen/Core>
 
+#include "pylot_lio/map/gaussian_voxel.hpp"
 #include "pylot_lio/map/i_point_cloud_map.hpp"
 
 namespace pylot_lio
@@ -74,6 +75,16 @@ public:
 
   // テスト用に内部統計へアクセスするための補助 (read-only)。
   const std::unordered_map<VoxelKey, GaussianCell, VoxelKeyHash> & cells() const;
+
+  // voxel_size / covariance_eigen_floor 等を read-only で参照する (GPU VGICP の
+  // voxel 表構築や、 外部から map のボクセル幾何を知りたい用途)。
+  const Config & config() const { return config_; }
+
+  // 各ボクセルの保存済みガウス分布 (mean/covariance/count) を中間表現で返す。
+  // metal_vgicp が「マップ非依存で target を受け取る」 ために使う。 共分散はオンライン
+  // 更新で蓄積したものをそのまま返す (toPointCloud() は 1 ボクセル 1 点なので不可)。
+  // sample_count が min_points_per_cell_for_covariance 未満のセルは除外する。
+  std::vector<GaussianVoxel> toGaussianVoxels() const;
 
 private:
   VoxelKey computeKey(const Eigen::Vector3d & position_world) const;

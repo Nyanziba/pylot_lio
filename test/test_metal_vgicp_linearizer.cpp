@@ -211,6 +211,37 @@ TEST(MetalVgicpLinearizer, GpuMatchesCpuWithinFp32Tolerance)
   EXPECT_NEAR(gpu.cost, cpu.cost, 1e-3 * std::max(1.0, std::abs(cpu.cost)));
 }
 
+TEST(MetalVgicpLinearizer, EngineReuseMatchesCpuAcrossTransforms)
+{
+  // 永続エンジン: setTarget/setSource を 1 回、 linearize を複数 transform で呼ぶ。
+  // 各回 CPU 参照と fp32 許容内で一致し、 gpu_used=true であること。
+  const auto scene = makeScene(200, 4000, 0.5f);
+  VgicpLinearizeConfig config;
+  config.search_radius_voxels = 1;
+
+  MetalVgicpEngine engine;
+  ASSERT_TRUE(engine.isValid());
+  engine.setTarget(scene.voxel_table);
+  engine.setSource(scene.source_points_body, scene.source_covariances_body);
+
+  for (double angle : {0.0, 0.08, -0.05}) {
+    Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
+    transform.linear() =
+      Eigen::AngleAxisd(angle, Eigen::Vector3d(0.2, 0.5, 0.84).normalized()).toRotationMatrix();
+    transform.translation() = Eigen::Vector3d(0.02 * angle, -0.01, 0.03);
+
+    const auto gpu = engine.linearize(transform, config);
+    const auto cpu = linearizeVgicpCpu(
+      scene.source_points_body, scene.source_covariances_body,
+      scene.voxel_table, transform, config);
+
+    ASSERT_TRUE(gpu.gpu_used);
+    EXPECT_EQ(gpu.valid_correspondences, cpu.valid_correspondences);
+    const double h_scale = std::max(1.0, cpu.hessian.cwiseAbs().maxCoeff());
+    EXPECT_LT((gpu.hessian - cpu.hessian).cwiseAbs().maxCoeff(), 1e-3 * h_scale);
+  }
+}
+
 TEST(MetalVgicpLinearizer, BenchmarkGpuVsCpu)
 {
   // GPU vs CPU(逐次) の線形化時間を点数別に出力する。 タイミングは環境依存なので

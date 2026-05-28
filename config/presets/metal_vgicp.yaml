@@ -1,0 +1,137 @@
+# Preset: Apple Metal GPU 上で VGICP を解く registration (metal_vgicp)。
+#
+# glim / gtsam_points の GaussianVoxelMapGPU + VGICP を Metal (metal-cpp) に移植した
+# バックエンド。 各 Gauss-Newton 反復の正規方程式 (H, b) 構築を GPU にオフロードし、
+# 6x6 solve と transform 更新は CPU で行う。
+#
+# 効くケース / 効かないケース (Apple M4 ベンチ、 1 反復線形化):
+#   点数 2万   → GPU 0.79x (起動オーバヘッドで CPU が速い)
+#   点数 10万  → GPU 4.89x
+#   点数 50万  → GPU 10.28x
+# 高密度・大規模スキャン (Velodyne, 高 fps Livox 等) で GPU が大きく勝つ。
+# 小規模 (~2万点以下) の Mid-360 単スキャンでは plain_gicp/small_gicp の方が速いこともある。
+#
+# マップは何でも可 (マップ非依存):
+#   - voxel_map / normal_map : 保存済みボクセルガウス分布を直接 GPU へ転送 (最高精度)。
+#   - voxel_random_map / voxel_keyframe_submap / kd_tree_map : toPointCloud() の生点群を
+#     map_voxel_size_m でボクセル化してガウス分布を復元する。 voxel_keyframe_submap を選べば
+#     loop closure / PGO / PCD フル保存を維持したまま GPU registration が使える。
+#   この preset では最高精度の voxel_map を既定にしている。
+#
+# その他:
+#   - Metal 非対応ビルド (非 Apple, PYLOT_LIO_HAS_METAL 未定義) では factory が
+#     自動的に plain_gicp にフォールバックする (警告を stderr に 1 回出す)。
+#   - fp32 精度 (Apple GPU は fp64 不可)。 omp/tbb (fp64) とビット一致はしない。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.3
+
+    # 最高精度の voxel_map を既定にする (他マップも可、 上記参照)。
+    map: "voxel_keyframe_submap"
+    map_voxel_size_m: 0.3
+    map_min_points_per_cell: 1
+
+    registration: "metal_vgicp"
+    registration_max_iterations: 20
+    # VGICP の対応: source 点が属する (近傍) ボクセルのガウス分布を target にする。
+    # max_correspondence は「点とボクセル mean の距離」上限として効く。
+    registration_max_correspondence_m: 2.0
+    # Gauss-Newton 停止条件 (並進 / 回転)。
+    registration_convergence_translation_m: 0.0001
+    registration_convergence_rotation_rad: 0.0001
+    # Huber ロバスト重み (残差 Mahalanobis ノルムの転換点)。 動的物体が多いなら小さめに。
+    registration_huber_threshold: 1.0
+    # source 共分散 (distribution-to-distribution 化)。 近傍 k 点から平面正則化共分散を推定。
+    registration_source_covariance_num_neighbors: 10
+    registration_source_covariance_plane_epsilon: 0.001
+
+    # ---- 前処理 (source 共分散推定) の GPU 化 ----
+    # true なら k 近傍探索 + 平面正則化を Metal にオフロードする (glim 相当の前処理 GPU 化)。
+    # これまで CPU の PCL KdTree が担っていた最大のボトルネックを GPU で消す。
+    # 近傍探索は KdTree ではなく空間ハッシュグリッド (GPU フレンドリ) なので、 厳密な
+    # k 近傍とはビット一致しないが共分散は実質同等。 GPU 無効ビルド / デバイス無では
+    # 自動的に CPU 参照 (同じグリッド kNN) にフォールバックする。 false で従来の PCL KdTree。
+    # Apple M4 ベンチ: 2万点 5.1x / 9万点 8.2x / 41万点 11.6x 高速 (vs 逐次 CPU)。
+    registration_metal_gpu_source_covariance: true
+    # GPU 共分散推定の近傍探索グリッドのセル一辺 [m]。 source 点群密度に対して
+    # 「k 近傍が 27 近傍セル (3x3x3) に収まる」 程度に取る。 voxel_grid_size_m=0.3 で
+    # 撒いた Mid-360 点群なら 0.3〜0.5 が目安 (粗すぎると候補過多、 細かすぎると近傍不足)。
+    registration_metal_source_covariance_cell_size_m: 0.5
+
+    # ---- GPU / CPU の切替 (この preset は GPU only) ----
+    # registration_metal_gpu_min_points: GPU を使う最小 source 点数。
+    #   0      → 点数に関係なく常に GPU (= GPU only。 この preset の既定)。
+    #   50000  → 5万点未満は CPU VGICP に自動切替 (起動オーバヘッド回避、 省電力寄り)。
+    # ベンチでは ~5万点未満で GPU が CPU に負ける (カーネル起動 / dispatch オーバヘッド) ため、
+    # 省電力・低レイテンシ重視の本番では 50000 程度を、 GPU 挙動を試すなら 0 を使う。
+    registration_metal_gpu_min_points: 0
+
+    # ---- 多重解像度 (coarse-to-fine) VGICP ----
+    # levels=1 で単一解像度。 2 以上で粗→細 (粗いレベルは収束盆が広く初期ずれに強い)。
+    registration_metal_voxelmap_levels: 2
+    registration_metal_voxelmap_scaling_factor: 2.0
+
+    # ---- 地面平面 leveling 拘束 (damped 版、 IMU 重力なしのピッチドリフト/お椀化対策) ----
+    # 各スキャンで支配的地面の法線を world-up (0,0,1) に合わせ、 ロール/ピッチを少しずつ
+    # 水平へ寄せる。 IMU の重力ベクトルが無くてもピッチドリフト (遠方地面がお椀状に持ち上がる)
+    # を抑えられる。 damping (max_correction_per_frame_deg) で振動を防止する。
+    # false (既定 OFF) にすれば従来動作。 凸凹路面でドリフトが目立つときに true にする。
+    registration_metal_enable_ground_constraint: false
+    # 拘束の強さ。 VGICP の回転剛性に対する比。 大きいほど水平化が強い。
+    # damping があるので強めでも急スナップしない。 1.0〜3.0 が実用域。
+    # ★ 主レバー: お椀化が強いなら 2.0〜3.0、 床に貼り付きすぎなら 0.5〜1.0 へ。
+    registration_metal_ground_constraint_weight: 1.0
+    # 最低 world z からこの高さ [m] までを地面候補として法線推定する。
+    # 大きすぎると壁・障害物まで拾う。 0.3〜0.7 が目安。
+    registration_metal_ground_band_m: 0.5
+    # 推定法線が (0,0,1) からこの角度 [deg] を超えて傾く scan は地面とみなさない。
+    # 大傾き (登録崩れで姿勢が傾いた状態) で拘束を発火させると GN を逆方向に引いて
+    # 連鎖 JUMP を悪化させるので、 確実に水平な地面だけ拘束対象にする。
+    # 歩行速度ロボットや屋内なら 5〜10、 屋外坂道があれば 15〜20。
+    registration_metal_ground_max_tilt_deg: 15.0
+    # damping: 1 align で加える leveling 補正の上限 [deg]。 振動防止の要。
+    # お椀化はゆっくり積もるので 1°/frame (10Hz=10°/s) で十分追いつく。
+    # 効きが弱ければ 1.5〜2.0、 まだ揺れるなら 0.5 へ。 0 で無制限 (hard 拘束、 振動リスク)。
+    registration_metal_ground_max_correction_per_frame_deg: 1.0
+    # 振動ゲート: 前フレームの地面法線 (body) との角度差がこれ [deg] を超えるフレームは
+    # 「車体ピッチ振動中」 とみなして拘束をスキップ。 凸凹路面で物理的に車体が振動する区間
+    # では、 水平化が物理運動に逆らって SLAM を破綻させていた。 お椀化ドリフトは連続フレーム
+    # 間でほぼ法線が変わらないので影響を受けず、 振動 (>= 数°/frame の急変) だけ自動 OFF。
+    # 厳しすぎて拘束が効かない場合は 5〜10 へ、 凸凸でも破綻するなら 1〜2 へ。 0 で無効化。
+    registration_metal_ground_vibration_threshold_deg: 3.0
+
+    # ---- オフライン rosbag リーダ (lio_rosbag) の進捗ログ ----
+    # この cloud 数ごとに「処理レート (clouds/s) と実時間比 (Nx realtime)」を出力する。
+    # 0 で無効。 lio_rosbag.launch.py / ros2 run lio_rosbag のときだけ効く
+    # (ライブ lio_node では無視)。
+    rosbag_progress_log_interval_clouds: 100
+
+    state_estimator: "ieskf"
+    enable_loop_diag: false
+
+
+    # Keyframe。 Velodyne は遠距離まで見えるので keyframe 間隔を少し広げて map を軽くする。
+    keyframe_min_translation_m: 2.5
+    keyframe_min_rotation_rad: 0.2
+
+    # Loop closure (Scan Context)。 Velodyne の有効距離に合わせて max_radius を拡大。
+    enable_loop_detection: true
+    loop_num_rings: 60
+    loop_num_sectors: 20
+    loop_max_radius_m: 100.0
+    loop_min_radius_m: 0.5
+    loop_score_threshold: 0.10
+    loop_exclude_recent_kf: 20
+    loop_ring_key_top_k: 20
+
+    # Loop ICP のゲート (Mid-360 と同値で十分動く)。
+    loop_icp_voxel_size_m: 0.3
+    loop_icp_max_correspondence_m: 5.0
+    loop_icp_max_fitness_score: 10.0
+    loop_icp_max_translation_jump_m: 10.0
+    loop_match_cooldown_keyframes: 0
+
+    # PGO は有効。 IESKF の odometry 品質に応じて sigma を調整する。
+    enable_pose_graph_optimization: true
+    pgo_optimize_every_n_keyframes: 5
