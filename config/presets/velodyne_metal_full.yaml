@@ -28,18 +28,6 @@ pylot_lio:
     # I/O format。 Velodyne driver は sensor_msgs/PointCloud2 を出す。
     input_cloud_format: "pointcloud2"
 
-    # ---- Motion deskew (スキャン歪み補正) ----
-    # 車載・高速走行では 1 スキャン (Velodyne 10Hz=0.1s) の間にセンサが ~1.4m 動き、
-    # 点群が歪んで registration が発散しやすい。 等速度モデルで各点を「スキャン終端の
-    # body フレーム」に補正する (IMU 不要、 extrinsic 不要)。
-    # deskew_time_field は Velodyne の per-point 時刻フィールド名 (通常 "time")。
-    # bag のフィールド名が違う場合は `ros2 topic echo <cloud> --field fields` で確認して変更。
-    # ★ false にすると deskew をスキップして生スキャンをそのまま使う。 歩行速度 ~1m/s では
-    #    1 スキャン (0.1s) で 10cm しか動かず、 むしろ CV 予測ずれによる deskew 誤補正が
-    #    害になる場合がある。 歪みが少ない低速ロボットでは OFF が安全。
-    enable_deskew: false
-    deskew_time_field: "time"
-
     # ---- 前処理: GPU voxel random sampling ----
     preprocessor: "voxel_random_sampling"
     voxel_grid_size_m: 0.4
@@ -139,20 +127,6 @@ pylot_lio:
     # 状態推定。 IMU 校正未済 (extrinsic identity) の段階では gicp_only が安定。
     # 校正後に "ieskf" に切り替えるのが推奨フロー。
     state_estimator: "gicp_only"
-
-    # ---- registration rejection (gicp_only 専用フォールバック) ----
-    # 局所的に LiDAR の対応が取れない場面 (開けた場所・動的物体・geometric degeneracy) で
-    # 1 frame の誤登録が pose を 2-3m 飛ばし、 以降の registration を連鎖的に壊す問題への対策。
-    # 「物理的にあり得ない補正量」 を検出して、 その frame は CV 予測 pose を採用し、
-    # map / keyframe 追加もスキップする。
-    gicp_only_rejection_enabled: true
-    # 歩行ロボット (~1m/s) で 1 scan (0.1s) の物理上限は 0.1m。 余裕を見て 0.5m。
-    # これより大きい trans 補正は誤対応として reject。
-    gicp_only_max_translation_correction_m: 0.5
-    # 急旋回でも 1 scan 10° 未満。 30° は明らかな破綻。
-    gicp_only_max_rotation_correction_deg: 30.0
-    # 未収束 (iter=100 で converged=0) かつ対応点数が通常 (~25000) の半分以下なら破綻。
-    gicp_only_min_correspondences_when_unconverged: 15000
 
     # xsens IMU は ROS 規約通り m/s²。 Mid-360 の g 単位スケールは適用しない。
     imu_acceleration_scale: 1.0

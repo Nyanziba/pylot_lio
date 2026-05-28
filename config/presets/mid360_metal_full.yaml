@@ -20,14 +20,40 @@ pylot_lio:
     preprocessor: "voxel_random_sampling"
     voxel_grid_size_m: 0.3
     # rate=1.0: 各ボクセルの点を全部残す (Mid-360 は元々疎なので間引きすぎない)。
-    voxel_random_sampling_rate: 1.0
+    voxel_random_sampling_rate: 0.5
     voxel_random_sampling_use_gpu: true
     voxel_random_sampling_seed: 12345
 
     # ★ metal_vgicp は voxel_map 必須。
-    map: "voxel_map"
-    map_voxel_size_m: 0.3
+    map: "voxel_keyframe_submap"
+    map_voxel_size_m: 0.4
     map_min_points_per_cell: 1
+    map_max_total_cells: 3000000
+
+    # ---- submap sliding window / 確定 submap のチューニング ----
+    # registration target は「直近 submap_window_size 個のキーフレーム」 の点群。 これが
+    # 1 フレームあたりの処理コストを決める (大きいほど target が増えて重く・正確に、
+    # 小さいほど軽く・局所的に)。 マップ全体が育っても target はここで一定に保たれるので、
+    # 持続スループットが安定する。
+    # ★ 地面お椀化 (ピッチドリフト) 対策の主レバー: window を大きくすると遠方地面が厚く
+    #    積もって voxel あたりの点が増え、 平面法線が立つ → ピッチが拘束されお椀化が減る。
+    #    5 のように小さいと遠方地面が疎で法線が潰れ、 ピッチが逃げやすい。 重さとの
+    #    トレードオフ。 まず 15 で様子を見る (重ければ 10、 まだ反れば 20 へ)。
+    submap_window_size: 2
+    # M 個キーフレームごとに 1 個の「確定 submap」スナップショットを内部保存する
+    # (loop closure / PGO / PCD フルマップの母体)。 window と揃えるのが無難。
+    submap_finalize_size: 2
+    # セル内 1 点だけ保持 → メモリ / PCD サイズ激減 (Velodyne の遠距離点に有効)。
+    # "keep_up_to_n" にすると submap_max_points_per_cell 点まで保持し target が密になる
+    # (registration はやや正確になるがメモリ・処理コスト増)。
+    submap_cell_sampling_mode: "keep_up_to_n"
+    # cell_sampling_mode="keep_up_to_n" のときセル内に保持する最大点数。
+    # "random_one" では事実上 1 (このパラメータは無視に近い)。
+    submap_max_points_per_cell: 32
+    # 各セルの共分散推定に使う近傍点数 (target ガウス分布の形を決める)。
+    submap_k_nearest_for_covariance: 8
+    # random_one モードのセル内 1 点選択に使う乱数 seed (0 でマシン乱数)。
+    submap_random_seed: 12345
 
     # ---- registration: Metal GPU VGICP ----
     registration: "metal_vgicp"
