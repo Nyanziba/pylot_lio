@@ -30,7 +30,6 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/io/pcd_io.h>
 
-#include "pylot_lio/deskew.hpp"
 #include "pylot_lio/factory.hpp"
 #include "pylot_lio/keyframe/distance_keyframe_selector.hpp"
 #include "pylot_lio/livox_conversion.hpp"
@@ -444,24 +443,6 @@ private:
       declare_parameter<std::string>(
         "state_estimator", backend_config_.state_estimator_name);
 
-    // ---- registration rejection (gicp_only 専用)。
-    backend_config_.gicp_only_rejection_enabled =
-      declare_parameter<bool>(
-        "gicp_only_rejection_enabled",
-        backend_config_.gicp_only_rejection_enabled);
-    backend_config_.gicp_only_max_translation_correction_m =
-      declare_parameter<double>(
-        "gicp_only_max_translation_correction_m",
-        backend_config_.gicp_only_max_translation_correction_m);
-    backend_config_.gicp_only_max_rotation_correction_deg =
-      declare_parameter<double>(
-        "gicp_only_max_rotation_correction_deg",
-        backend_config_.gicp_only_max_rotation_correction_deg);
-    backend_config_.gicp_only_min_correspondences_when_unconverged =
-      declare_parameter<int>(
-        "gicp_only_min_correspondences_when_unconverged",
-        backend_config_.gicp_only_min_correspondences_when_unconverged);
-
     backend_config_.imu_acceleration_scale =
       declare_parameter<double>(
         "imu_acceleration_scale", backend_config_.imu_acceleration_scale);
@@ -558,12 +539,6 @@ private:
     keyframe_max_scans_between_ =
       declare_parameter<int>("keyframe_max_scans_between_keyframes", 50);
 
-    // Motion deskew (スキャン歪み補正)。 高速移動する回転式 LiDAR (車載 Velodyne 等) で
-    // 1 スキャン内のセンサ移動による歪みを等速度モデルで補正する。 低速・低歪みの
-    // Mid-360 等では false で十分。 deskew_time_field は PointCloud2 の per-point 時刻
-    // フィールド名 (velodyne は "time")。 Livox CustomMsg は offset_time を自動使用する。
-    enable_deskew_ = declare_parameter<bool>("enable_deskew", false);
-    deskew_time_field_ = declare_parameter<std::string>("deskew_time_field", "time");
 
     // オフライン rosbag リーダ (lio_rosbag) の進捗ログ間隔 [cloud 数]。
     // 0 で進捗ログ無効。 ライブ lio_node では使わないが、 preset から設定できるよう
@@ -677,87 +652,7 @@ private:
         "Converted point cloud is empty (PointCloud2 fields lacked x/y/z?)");
       return;
     }
-    // Velodyne 等の per-point 時刻フィールドをパースして deskew (有効時のみ)。
-    if (enable_deskew_) {
-      const std::vector<double> offset_seconds =
-        parsePointCloud2OffsetSeconds(*message, raw_cloud->points.size());
-      maybeDeskew(*raw_cloud, offset_seconds);
-    }
     processRawCloudLocked(raw_cloud, message->header.stamp);
-  }
-
-  // PointCloud2 の per-point 時刻フィールド (deskew_time_field_、 velodyne は "time") を
-  // 秒オフセット (スキャン開始基準) に正規化して返す。 フィールドが無い / 型が非対応 /
-  // 点数不一致なら空 vector を返す (= deskew しない)。 FLOAT32 / FLOAT64 に対応。
-  std::vector<double> parsePointCloud2OffsetSeconds(
-    const sensor_msgs::msg::PointCloud2 & message, std::size_t expected_count)
-  {
-    const sensor_msgs::msg::PointField * time_field = nullptr;
-    for (const auto & field : message.fields) {
-      if (field.name == deskew_time_field_) {
-        time_field = &field;
-        break;
-      }
-    }
-    if (time_field == nullptr) {
-      RCLCPP_WARN_ONCE(get_logger(),
-        "enable_deskew=true but PointCloud2 has no '%s' field; skipping deskew.",
-        deskew_time_field_.c_str());
-      return {};
-    }
-    const std::size_t num_points =
-      static_cast<std::size_t>(message.width) * static_cast<std::size_t>(message.height);
-    if (num_points != expected_count) {
-      return {};  // fromROSMsg と点数がずれるケースは安全に skip。
-    }
-
-    std::vector<double> offset_seconds;
-    offset_seconds.reserve(num_points);
-    if (time_field->datatype == sensor_msgs::msg::PointField::FLOAT32) {
-      sensor_msgs::PointCloud2ConstIterator<float> iterator(message, deskew_time_field_);
-      for (std::size_t i = 0; i < num_points; ++i, ++iterator) {
-        offset_seconds.push_back(static_cast<double>(*iterator));
-      }
-    } else if (time_field->datatype == sensor_msgs::msg::PointField::FLOAT64) {
-      sensor_msgs::PointCloud2ConstIterator<double> iterator(message, deskew_time_field_);
-      for (std::size_t i = 0; i < num_points; ++i, ++iterator) {
-        offset_seconds.push_back(*iterator);
-      }
-    } else {
-      RCLCPP_WARN_ONCE(get_logger(),
-        "deskew '%s' field datatype=%d unsupported (need FLOAT32/64); skipping deskew.",
-        deskew_time_field_.c_str(), static_cast<int>(time_field->datatype));
-      return {};
-    }
-    // スキャン開始を 0 にそろえる (driver により絶対時刻 / 相対時刻のどちらでも吸収)。
-    double min_time = offset_seconds.empty() ? 0.0 : offset_seconds.front();
-    for (const double value : offset_seconds) {
-      if (value < min_time) {
-        min_time = value;
-      }
-    }
-    for (double & value : offset_seconds) {
-      value -= min_time;
-    }
-    return offset_seconds;
-  }
-
-  // offset_seconds (スキャン開始基準) と直前スキャンの相対運動で生 cloud を deskew する。
-  // 推定運動がまだ無い (初回) / offset 空 のときは何もしない。
-  void maybeDeskew(PointCloud & cloud, const std::vector<double> & offset_seconds)
-  {
-    if (!has_motion_delta_ || offset_seconds.empty() ||
-        offset_seconds.size() != cloud.points.size())
-    {
-      return;
-    }
-    double scan_duration_s = 0.0;
-    for (const double value : offset_seconds) {
-      if (value > scan_duration_s) {
-        scan_duration_s = value;
-      }
-    }
-    deskewCloudInPlace(cloud, offset_seconds, last_motion_delta_body_, scan_duration_s);
   }
 
 #ifdef PYLOT_LIO_HAS_LIVOX_DRIVER
@@ -799,10 +694,6 @@ private:
         "Converted Livox CustomMsg is empty (point_num=0?)");
       return;
     }
-    // convertLivoxRawPoints は 1:1 変換なので offset_seconds と cloud の並びは一致する。
-    if (enable_deskew_) {
-      maybeDeskew(*raw_cloud, offset_seconds);
-    }
     processRawCloudLocked(raw_cloud, message->header.stamp);
   }
 #endif
@@ -818,25 +709,9 @@ private:
       *preprocessed_cloud, *backends_.point_cloud_map, *backends_.registration,
       stamp.nanoseconds());
 
-    // registration rejection: gicp_only estimator が「物理的にあり得ない補正」 を検出して
-    // CV 予測 pose に戻した frame は、 map / keyframe 追加対象から外す。 誤った pose で
-    // 点群を積むと map を汚し、 以降の registration を連鎖的に悪化させるため。
-    if (backends_.state_estimator->getDiagnostics().rejected) {
-      return;
-    }
-
     // Keyframe ゲート: 直前 keyframe との SE(3) 差分が閾値を超えたとき (= 初回・大きく移動・回転)
     // だけマップに挿入する。停止中は挿入しないので重複点群の肥大化を防げる。
     const auto current_pose = backends_.state_estimator->getState().pose_world_body;
-
-    // deskew 用ポーズ履歴の更新: 直前スキャンの相対運動 ΔT を等速度推定として保持する。
-    // 次スキャンの deskew はこの ΔT (= 前々→前 の運動) を「今回の運動」とみなして使う。
-    if (has_previous_pose_for_deskew_) {
-      last_motion_delta_body_ = previous_pose_for_deskew_.inverse() * current_pose;
-      has_motion_delta_ = true;
-    }
-    previous_pose_for_deskew_ = current_pose;
-    has_previous_pose_for_deskew_ = true;
 
     if (keyframe_selector_->shouldCreateKeyframe(current_pose)) {
       const uint32_t this_keyframe_id =
@@ -1391,16 +1266,6 @@ private:
   double keyframe_min_translation_m_ = 1.0;
   double keyframe_min_rotation_rad_ = 0.2;
   int keyframe_max_scans_between_ = 50;
-
-  // Motion deskew 設定と、 等速度モデル用のポーズ履歴。
-  bool enable_deskew_ = false;
-  std::string deskew_time_field_ = "time";
-  // 直前スキャンの相対運動 ΔT (= 前々→前 の body 運動)。 現スキャンの deskew 推定に使う。
-  Eigen::Isometry3d last_motion_delta_body_ = Eigen::Isometry3d::Identity();
-  bool has_motion_delta_ = false;
-  // deskew 用に前回出力 pose を保持 (ΔT 計算のため)。
-  Eigen::Isometry3d previous_pose_for_deskew_ = Eigen::Isometry3d::Identity();
-  bool has_previous_pose_for_deskew_ = false;
 
   // Loop closure detection (Scan Context)。 enable_loop_detection=false の場合は
   // loop_detector_ が nullptr のままになる。

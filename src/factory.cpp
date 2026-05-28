@@ -253,15 +253,7 @@ IStateEstimatorPtr buildStateEstimator(const LioBackendConfig & config)
     return std::make_unique<HgoEstimator>(hgo_config);
   }
   if (config.state_estimator_name == "gicp_only") {
-    GicpOnlyEstimator::RejectionConfig rejection_config;
-    rejection_config.enabled = config.gicp_only_rejection_enabled;
-    rejection_config.max_translation_correction_m =
-      config.gicp_only_max_translation_correction_m;
-    rejection_config.max_rotation_correction_deg =
-      config.gicp_only_max_rotation_correction_deg;
-    rejection_config.min_correspondences_when_unconverged =
-      config.gicp_only_min_correspondences_when_unconverged;
-    return std::make_unique<GicpOnlyEstimator>(rejection_config);
+    return std::make_unique<GicpOnlyEstimator>();
   }
   throw std::invalid_argument(
     "Unknown state_estimator_name: " + config.state_estimator_name);
