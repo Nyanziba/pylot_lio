@@ -116,12 +116,14 @@ set(PYLOT_LIO_CORE_SOURCES
   src/preprocess/voxel_grid_preprocessor.cpp
   src/preprocess/random_sampling_preprocessor.cpp
   src/preprocess/voxel_random_sampling_preprocessor.cpp
+  src/map/gaussian_voxel.cpp
   src/map/voxel_map.cpp
   src/map/kd_tree_map.cpp
   src/map/normal_map.cpp
   src/map/voxel_random_map.cpp
   src/map/voxel_keyframe_submap_map.cpp
   src/registration/source_covariance.cpp
+  src/registration/ground_constraint.cpp
   src/registration/plain_gicp_registration.cpp
   src/registration/metal_vgicp_registration.cpp
   src/estimator/ieskf_estimator.cpp
@@ -129,6 +131,7 @@ set(PYLOT_LIO_CORE_SOURCES
   src/estimator/gicp_only_estimator.cpp
   src/keyframe/distance_keyframe_selector.cpp
   src/livox_conversion.cpp
+  src/deskew.cpp
   src/loop/scan_context.cpp
   src/loop/scan_context_loop_detector.cpp
   src/loop/loop_closure_icp.cpp
@@ -174,6 +177,8 @@ set(PYLOT_LIO_METALCPP_INCLUDE
 target_sources(pylot_lio_core PRIVATE
   src/gpu/metal_compute_probe.cpp
   src/gpu/metal_vgicp_linearizer.cpp
+  src/gpu/metal_covariance_estimator.cpp
+  src/gpu/metal_voxel_downsampler.cpp
 )
 if(APPLE AND IS_DIRECTORY "${PYLOT_LIO_METALCPP_INCLUDE}/Metal")
   find_library(METAL_FRAMEWORK Metal)
@@ -187,6 +192,8 @@ if(APPLE AND IS_DIRECTORY "${PYLOT_LIO_METALCPP_INCLUDE}/Metal")
     set_source_files_properties(
       src/gpu/metal_compute_probe.cpp
       src/gpu/metal_vgicp_linearizer.cpp
+      src/gpu/metal_covariance_estimator.cpp
+      src/gpu/metal_voxel_downsampler.cpp
       PROPERTIES
       COMPILE_OPTIONS "-Wno-gnu-anonymous-struct;-Wno-nested-anon-types")
     message(STATUS "Metal found; 'metal' GPU backend probe enabled (metal-cpp).")
@@ -356,6 +363,10 @@ if(BUILD_TESTING)
     test_metal_compute_probe
     test_metal_vgicp_linearizer
     test_metal_vgicp_registration
+    test_metal_covariance_estimator
+    test_metal_voxel_downsampler
+    test_ground_constraint
+    test_deskew
   )
 
   foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)

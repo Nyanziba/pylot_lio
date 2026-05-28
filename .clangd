@@ -1,0 +1,24 @@
+# clangd 設定 — pylot_lio (pixi global env / ROS 2 Jazzy, macOS arm64)
+#
+# colcon が CMAKE_EXPORT_COMPILE_COMMANDS=ON (activate_pixi_env.sh で export 済み) で
+# 出力する build/pylot_lio/compile_commands.json を参照する。 これにより pixi global env
+# (~/.pixi/envs/default) の Eigen / rclcpp / PCL / TBB / small_gicp と、 自パッケージ
+# include の -isystem / -I が「実ビルドが見るのと同じ形」で clangd に渡り、
+# "file not found" / "undeclared identifier (Eigen / rclcpp 等)" の IDE エラーが消える。
+#
+# DB を更新するには pylot_lio を一度ビルドすればよい:
+#   source ./activate_pixi_env.sh && cb --packages-select pylot_lio
+CompileFlags:
+  # compile_commands.json が置かれたディレクトリ (パッケージごとに異なる)。
+  CompilationDatabase: /Users/nyanziba/hobby/05_libraries/library/build/pylot_lio
+  # pixi global env の clang を driver に固定し、 libc++ / builtin ヘッダを実ビルドと一致
+  # させる。 さらに正確を期すなら clangd 拡張の設定に以下を加える (システムヘッダの抽出を許可):
+  #   "clangd.arguments": ["--query-driver=/Users/nyanziba/.pixi/envs/default/bin/clang*"]
+  Compiler: /Users/nyanziba/.pixi/envs/default/bin/clang++
+  # conda-forge の clang は OpenMP を `-fopenmp=libomp` と綴るが、 clangd が使う
+  # (Apple) clang フロントエンドは `-fopenmp` / `-fopenmp=libomp` を unsupported として
+  # 拒否し、 コマンド全体が失敗して include 解決まで巻き添えになる。 OpenMP 関連フラグを
+  # まとめて除去する (IDE 解析では omp pragma が "unknown pragma" 警告になるだけで無害)。
+  Remove:
+    - -fopenmp
+    - -fopenmp=*

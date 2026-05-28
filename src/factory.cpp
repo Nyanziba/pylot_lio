@@ -43,6 +43,8 @@ IPreprocessorPtr buildPreprocessor(const LioBackendConfig & config)
     VoxelRandomSamplingPreprocessor::Config voxel_random_config;
     voxel_random_config.voxel_size_m = config.voxel_grid_size_m;
     voxel_random_config.random_seed = config.voxel_random_sampling_seed;
+    voxel_random_config.sampling_rate = config.voxel_random_sampling_rate;
+    voxel_random_config.use_gpu = config.voxel_random_sampling_use_gpu;
     return std::make_unique<VoxelRandomSamplingPreprocessor>(voxel_random_config);
   }
   throw std::invalid_argument(
@@ -152,6 +154,23 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
       metal_config.voxelmap_levels = config.registration_metal_voxelmap_levels;
       metal_config.voxelmap_scaling_factor =
         config.registration_metal_voxelmap_scaling_factor;
+      metal_config.use_gpu_source_covariance =
+        config.registration_metal_gpu_source_covariance;
+      metal_config.source_covariance_cell_size_m =
+        config.registration_metal_source_covariance_cell_size_m;
+      // voxel_map / normal_map 以外 (point ベースマップ) を target にするときの
+      // ボクセル化設定。 map レイヤーの voxel_size / min_points を流用する。
+      metal_config.target_voxel_size_m = config.map_voxel_size_m;
+      metal_config.min_points_per_voxel = config.map_min_points_per_cell;
+      // 地面 leveling 拘束 (IMU 重力なしのピッチドリフト対策)。
+      metal_config.enable_ground_constraint = config.registration_metal_enable_ground_constraint;
+      metal_config.ground_constraint_weight = config.registration_metal_ground_constraint_weight;
+      metal_config.ground_band_m = config.registration_metal_ground_band_m;
+      metal_config.ground_max_tilt_deg = config.registration_metal_ground_max_tilt_deg;
+      metal_config.ground_max_correction_per_frame_deg =
+        config.registration_metal_ground_max_correction_per_frame_deg;
+      metal_config.ground_vibration_threshold_deg =
+        config.registration_metal_ground_vibration_threshold_deg;
       return std::make_unique<MetalVgicpRegistration>(metal_config);
     }
     std::fprintf(
@@ -234,7 +253,15 @@ IStateEstimatorPtr buildStateEstimator(const LioBackendConfig & config)
     return std::make_unique<HgoEstimator>(hgo_config);
   }
   if (config.state_estimator_name == "gicp_only") {
-    return std::make_unique<GicpOnlyEstimator>();
+    GicpOnlyEstimator::RejectionConfig rejection_config;
+    rejection_config.enabled = config.gicp_only_rejection_enabled;
+    rejection_config.max_translation_correction_m =
+      config.gicp_only_max_translation_correction_m;
+    rejection_config.max_rotation_correction_deg =
+      config.gicp_only_max_rotation_correction_deg;
+    rejection_config.min_correspondences_when_unconverged =
+      config.gicp_only_min_correspondences_when_unconverged;
+    return std::make_unique<GicpOnlyEstimator>(rejection_config);
   }
   throw std::invalid_argument(
     "Unknown state_estimator_name: " + config.state_estimator_name);
