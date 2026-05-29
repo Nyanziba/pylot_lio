@@ -1,0 +1,30 @@
+# Preset: pcl::NormalDistributionsTransform (CPU) を registration バックエンドに使う。
+#
+# 注意:
+#  - NDT は target 空間をボクセルに区切ってガウシアン化するため、 target 点群が
+#    voxel_map の「1 セル 1 点」 集約だと PCL NDT 内部の VoxelGridCovariance
+#    (最低 6 点/voxel) が餓死し、 "Voxel grid is not searchable!" 警告と共に
+#    収束が止まる。 そのため map は多点保持の voxel_keyframe_submap を使う。
+#  - state_estimator: "gicp_only" は IRegistration を毎フレーム呼ぶシンプルな
+#    推定器なので、 NDT バックエンドの比較に最適。 IESKF は findNearestNeighbor
+#    を直接使うため registration バックエンドが NDT でも呼ばれない (= 比較不可)。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.3
+
+    map: "voxel_keyframe_submap"
+    map_voxel_size_m: 0.5
+    submap_window_size: 20
+    submap_max_points_per_cell: 32
+    submap_k_nearest_for_covariance: 8
+
+    registration: "pcl_ndt"
+    registration_max_iterations: 50
+    registration_ndt_resolution_m: 1.5
+    registration_ndt_step_size_m: 0.2
+    registration_ndt_transformation_epsilon_m: 1.0e-5
+
+    state_estimator: "gicp_only"
+
+    enable_loop_diag: false

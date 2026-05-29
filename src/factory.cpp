@@ -17,6 +17,9 @@
 #include "pylot_lio/preprocess/random_sampling_preprocessor.hpp"
 #include "pylot_lio/preprocess/voxel_grid_preprocessor.hpp"
 #include "pylot_lio/preprocess/voxel_random_sampling_preprocessor.hpp"
+#include "pylot_lio/registration/metal_ndt_registration.hpp"
+#include "pylot_lio/registration/ndt_omp_lite_registration.hpp"
+#include "pylot_lio/registration/pcl_ndt_registration.hpp"
 #include "pylot_lio/registration/plain_gicp_registration.hpp"
 #include "pylot_lio/registration/metal_vgicp_registration.hpp"
 
@@ -196,6 +199,47 @@ IRegistrationPtr buildRegistration(const LioBackendConfig & config)
     return std::make_unique<SmallGicpRegistration>(small_gicp_config);
   }
 #endif
+  if (config.registration_name == "ndt_metal") {
+    MetalNdtRegistration::Config metal_ndt_config;
+    metal_ndt_config.resolution_m = config.registration_ndt_resolution_m;
+    metal_ndt_config.step_size = config.registration_ndt_step_size_m;
+    metal_ndt_config.convergence_translation_m =
+      config.registration_ndt_transformation_epsilon_m;
+    metal_ndt_config.convergence_rotation_rad =
+      config.registration_ndt_rotation_epsilon_rad;
+    metal_ndt_config.max_iterations = config.registration_max_iterations;
+    metal_ndt_config.max_correspondence_distance_m =
+      config.registration_max_correspondence_m;
+    metal_ndt_config.min_points_per_voxel = config.registration_ndt_min_points_per_voxel;
+    metal_ndt_config.covariance_det_floor =
+      config.registration_ndt_covariance_eigenvalue_floor;
+    metal_ndt_config.gpu_min_points = config.registration_metal_gpu_min_points;
+    return std::make_unique<MetalNdtRegistration>(metal_ndt_config);
+  }
+  if (config.registration_name == "ndt_omp_lite") {
+    NdtOmpLiteRegistration::Config ndt_omp_config;
+    ndt_omp_config.resolution_m = config.registration_ndt_resolution_m;
+    ndt_omp_config.step_size = config.registration_ndt_step_size_m;
+    ndt_omp_config.transformation_epsilon_m =
+      config.registration_ndt_transformation_epsilon_m;
+    ndt_omp_config.rotation_epsilon_rad =
+      config.registration_ndt_rotation_epsilon_rad;
+    ndt_omp_config.max_iterations = config.registration_max_iterations;
+    ndt_omp_config.num_threads = config.registration_num_threads;
+    ndt_omp_config.min_points_per_voxel = config.registration_ndt_min_points_per_voxel;
+    ndt_omp_config.covariance_eigenvalue_floor =
+      config.registration_ndt_covariance_eigenvalue_floor;
+    return std::make_unique<NdtOmpLiteRegistration>(ndt_omp_config);
+  }
+  if (config.registration_name == "pcl_ndt") {
+    PclNdtRegistration::Config pcl_ndt_config;
+    pcl_ndt_config.resolution_m = config.registration_ndt_resolution_m;
+    pcl_ndt_config.step_size_m = config.registration_ndt_step_size_m;
+    pcl_ndt_config.transformation_epsilon_m =
+      config.registration_ndt_transformation_epsilon_m;
+    pcl_ndt_config.max_iterations = config.registration_max_iterations;
+    return std::make_unique<PclNdtRegistration>(pcl_ndt_config);
+  }
   if (config.registration_name == "sycl") {
     // SYCL バックエンドは S4 で実装。CMake 側で stub 経由のフォールバック。
     // ここでは PlainGicp にフォールバックしてビルドを通す。

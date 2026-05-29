@@ -24,7 +24,7 @@ find_package(tf2_eigen REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(pcl_ros REQUIRED)
 
-find_package(PCL REQUIRED COMPONENTS common io filters kdtree)
+find_package(PCL REQUIRED COMPONENTS common io filters kdtree registration)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP QUIET)
 find_package(TBB QUIET)
@@ -124,6 +124,9 @@ set(PYLOT_LIO_CORE_SOURCES
   src/map/voxel_keyframe_submap_map.cpp
   src/registration/source_covariance.cpp
   src/registration/ground_constraint.cpp
+  src/registration/metal_ndt_registration.cpp
+  src/registration/ndt_omp_lite_registration.cpp
+  src/registration/pcl_ndt_registration.cpp
   src/registration/plain_gicp_registration.cpp
   src/registration/metal_vgicp_registration.cpp
   src/estimator/ieskf_estimator.cpp
@@ -345,6 +348,9 @@ if(BUILD_TESTING)
     test_pose_graph_optimizer
     test_livox_conversion
     test_metal_vgicp_registration  # kernel テストは metal_gpu_kernels へ移管済み
+    test_pcl_ndt_registration
+    test_ndt_omp_lite_registration
+    test_metal_ndt_registration
   )
 
   foreach(gtest_name IN LISTS PYLOT_LIO_GTESTS)

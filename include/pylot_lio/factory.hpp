@@ -92,10 +92,27 @@ struct LioBackendConfig
 
   // registration
   std::string registration_name = "small_gicp_vgicp";
-    // plain_gicp | small_gicp_gicp | small_gicp_vgicp | sycl
+    // plain_gicp | small_gicp_gicp | small_gicp_vgicp | pcl_ndt | ndt_omp_lite |
+    // ndt_metal | sycl
   double registration_max_correspondence_m = 2.0;
   int registration_num_threads = 4;
   int registration_max_iterations = 30;
+
+  // pcl_ndt 固有のチューニング (他の registration では無視される)。
+  // NDT は target 空間をボクセル化してガウシアンに要約するため resolution が支配的。
+  // Livox Mid-360 屋内では 0.5〜2.0 m 程度を rosbag でスイープして決める。
+  double registration_ndt_resolution_m = 1.0;
+  double registration_ndt_step_size_m = 0.1;
+  double registration_ndt_transformation_epsilon_m = 0.01;
+
+  // ndt_omp_lite / ndt_metal 共通: ボクセルあたり最小点数 (これ未満は破棄)。
+  // PCL VoxelGridCovariance のデフォルトと同じ 6。
+  int registration_ndt_min_points_per_voxel = 6;
+  // 共分散の最小固有値 floor (退化対策)。
+  double registration_ndt_covariance_eigenvalue_floor = 1e-3;
+  // ndt_omp_lite / ndt_metal の回転収束しきい値 (pcl_ndt の transformation_epsilon は
+  // 並進専用)。
+  double registration_ndt_rotation_epsilon_rad = 1e-4;
   // 並列バックエンド: "omp" (OpenMP) | "tbb" (Intel TBB)。
   // plain_gicp と small_gicp_(v)gicp の両方で共通に使う。 ビルドに TBB が含まれない
   // (PYLOT_LIO_HAS_TBB 未定義) 場合は "tbb" 指定でも OpenMP に自動フォールバックする。

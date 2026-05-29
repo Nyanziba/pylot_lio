@@ -1,0 +1,30 @@
+# Preset: ndt_omp_lite (CPU OpenMP) を registration バックエンドに使う。
+#
+# 注意:
+#  - pcl_ndt と同様、 map は多点保持の voxel_keyframe_submap を使う。
+#  - state_estimator: "gicp_only" で IRegistration を毎フレーム呼ぶ構成。
+#  - num_threads <= 0 で OpenMP の max_threads に任せる。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_grid"
+    voxel_grid_size_m: 0.3
+
+    map: "voxel_keyframe_submap"
+    map_voxel_size_m: 0.5
+    submap_window_size: 20
+    submap_max_points_per_cell: 32
+    submap_k_nearest_for_covariance: 8
+
+    registration: "ndt_omp_lite"
+    registration_max_iterations: 50
+    registration_num_threads: 0  # OpenMP に任せる
+    registration_ndt_resolution_m: 1.5
+    registration_ndt_step_size_m: 1.0  # Newton step スケール (line search 無し)
+    registration_ndt_transformation_epsilon_m: 1.0e-4
+    registration_ndt_rotation_epsilon_rad: 1.0e-4
+    registration_ndt_min_points_per_voxel: 6
+    registration_ndt_covariance_eigenvalue_floor: 1.0e-3
+
+    state_estimator: "gicp_only"
+
+    enable_loop_diag: false

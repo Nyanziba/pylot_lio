@@ -1,0 +1,37 @@
+# Preset: Metal GPU NDT を registration バックエンドに使う。
+#
+# 注意:
+#  - 各反復の線形化 (6x6 H と 6x1 g) を Metal カーネルにオフロードする。
+#  - GPU 起動オーバヘッドを避けるため source 点数が gpu_min_points 未満なら
+#    CPU 参照 (linearizeNdtCpu) に自動切替する (registration_metal_gpu_min_points)。
+#  - fp32 計算のため ndt_omp_lite (fp64) より精度はわずかに落ちるが、 大規模 source 点群
+#    (Mid-360 ~60k 点) で 5〜10 倍速を目指す。
+#  - Metal 無効ビルド / GPU デバイス無の場合は CPU 参照に自動フォールバック。
+pylot_lio:
+  ros__parameters:
+    preprocessor: "voxel_random_sampling"
+    voxel_grid_size_m: 0.3
+    voxel_random_sampling_rate: 0.3
+    voxel_random_sampling_use_gpu: true
+    voxel_random_sampling_seed: 12345
+    map: "voxel_keyframe_submap"
+    map_voxel_size_m: 0.5
+    submap_window_size: 20
+    submap_max_points_per_cell: 32
+    submap_k_nearest_for_covariance: 8
+
+    registration: "ndt_metal"
+    registration_max_iterations: 200
+    registration_num_threads: 0  # GPU 経路では未使用 (CPU 参照フォールバック時のみ意味あり)
+    registration_max_correspondence_m: 5.0
+    registration_ndt_resolution_m: 1.0
+    registration_ndt_step_size_m: 1.0
+    registration_ndt_transformation_epsilon_m: 1.0e-4
+    registration_ndt_rotation_epsilon_rad: 1.0e-4
+    registration_ndt_min_points_per_voxel: 6
+    registration_ndt_covariance_eigenvalue_floor: 1.0e-9  # Metal shader 側の det floor
+    registration_metal_gpu_min_points: 5000  # 5000 点以上で GPU 経路 (Mid-360 1 スキャン分)
+
+    state_estimator: "gicp_only"
+
+    enable_loop_diag: false
